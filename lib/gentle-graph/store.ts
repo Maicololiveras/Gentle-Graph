@@ -17,7 +17,13 @@ type GraphLookup = {
 };
 
 const lookupCache = new WeakMap<GraphIndex, GraphLookup>();
-export const lastSync = new WeakMap<GraphIndex, { time: number; stalePatterns: number }>();
+const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
+export function resolveImport(file: string, source: string, exists: (candidate: string) => boolean) {
+  if (!source.startsWith(".")) return undefined;
+  const base = path.posix.join(path.posix.dirname(file), source);
+  const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");
+  return [base, ...extensions.map(ext => stem + ext), ...extensions.map(ext => base + "/index" + ext)].find(exists);
+}
 
 export function getLookup(index: GraphIndex): GraphLookup {
   const cached = lookupCache.get(index);
@@ -37,14 +43,9 @@ export function getLookup(index: GraphIndex): GraphLookup {
     for (const call of symbol.calls) append(callersByName, call, symbol);
   }
   const importers = new Map<string, Set<string>>();
-  const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
   for (const file of Object.values(index.files)) {
     for (const source of file.imports) {
-      if (!source.startsWith(".")) continue;
-      const base = path.posix.join(path.posix.dirname(file.path), source);
-      const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");
-      const candidates = [base, ...extensions.map(ext => stem + ext), ...extensions.map(ext => base + "/index" + ext)];
-      const match = candidates.find(candidate => Object.hasOwn(index.files, candidate));
+      const match = resolveImport(file.path, source, candidate => Object.hasOwn(index.files, candidate));
       if (!match) continue;
       const parents = importers.get(match) ?? new Set<string>();
       parents.add(file.path);

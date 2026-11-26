@@ -1,9 +1,10 @@
+import { gitDirtyFiles, gitListIndexableFiles } from "./git-scope.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isIndexableFile } from "./parser-generic.ts";
+import { isIndexableFile, parseGenericFile } from "./parser-generic.ts";
 import { parseSourceFile } from "./parser-ts.ts";
-import { GRAPH_DIR, INDEX_FILE, invalidateLookup, lastSync, loadArchGuide, loadGraphIndex, saveArchGuide, saveGraphIndex } from "./store.ts";
+import { invalidateLookup, resolveImport, loadArchGuide, loadGraphIndex, saveArchGuide, saveGraphIndex } from "./store.ts";
 import type { GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
@@ -89,104 +90,96 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
   return staleCount;
 }
 
-/**
- * Sincronización incremental delta (mtime + SHA-256) aislada por projectRoot / worktree.
- * También valida que los patrones en guide.json sigan apuntando a código vivo.
- */
-export function syncGraphIndex(projectRoot: string, force = false): {
-  index: GraphIndex;
-  stats: SyncStats;
-} {
-  const startedAt = Date.now();
-  const resolvedRoot = path.resolve(projectRoot);
-  const index = loadGraphIndex(resolvedRoot);
-  const previous = lastSync.get(index);
-  if (!force && previous && performance.now() - previous.time < SYNC_TTL_MS) {
-    return { index, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
-  }
-  let touched = false;
-  const currentFiles: string[] = [];
-  walkSourceFiles(resolvedRoot, resolvedRoot, currentFiles);
+function eligible(file: string): boolean {
+  return !/(?:^|\/)(?:\.git|\.gentle-graph|node_modules|dist|build|coverage|\.next|\.turbo|vendor|target|__pycache__)\//.test(file) &&
+    !/\.(min|bundle)\.[cm]?[jt]sx?$/i.test(file);
+}
 
-  const seen = new Set(currentFiles);
-  let updated = 0;
-  let removed = 0;
+export function listWorkspaceFiles(root: string) {
+  const tracked = gitListIndexableFiles(root);
+  const knownFiles = tracked ?? [];
+  if (!tracked) walkSourceFiles(root, root, knownFiles);
+  return { knownFiles: knownFiles.filter(eligible), git: tracked !== null };
+}
 
-  for (const existingPath of Object.keys(index.files)) {
-    if (!seen.has(existingPath)) {
-      delete index.files[existingPath];
-      removed++;
-    }
-  }
+type Scope = { knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
+const scopes = new WeakMap<GraphIndex, { scope: Scope; time: number; stalePatterns: number }>();
 
-  for (const relPath of currentFiles) {
-    const absPath = path.join(resolvedRoot, relPath);
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(absPath);
-    } catch {
-      continue;
-    }
-
-    if (stat.size > MAX_SOURCE_BYTES) {
-      if (index.files[relPath]) { delete index.files[relPath]; removed++; }
-      continue;
-    }
-    const cached = index.files[relPath];
-    if (cached && cached.mtimeMs === stat.mtimeMs) {
-      continue;
-    }
-
-    let content: string;
-    try {
-      content = fs.readFileSync(absPath, "utf8");
-    } catch {
-      continue;
-    }
-
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean } = {}) {
+  const root = path.resolve(projectRoot);
+  const index = loadGraphIndex(root);
+  const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
+  const stats: SyncStats = { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: 0 };
+  const start = performance.now();
+  const visited = new Set<string>();
+  let changed = false;
+  function visit(file: string) {
+    const cached = index.files[file];
+    if (!paths.has(file)) return;
+    const abs = path.join(root, file);
+    const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
+    if (!stat?.isFile() || stat.size > MAX_SOURCE_BYTES) return;
+    const reusable = cached && (!cached.preview || options.preview);
+    if (reusable && cached.mtimeMs === stat.mtimeMs) return cached;
+    const content = fs.readFileSync(abs, "utf8");
     const hash = sha256(content);
-    if (cached && cached.sha256 === hash) {
-      touched = true;
+    if (reusable && cached.sha256 === hash) {
       cached.mtimeMs = stat.mtimeMs;
-      continue;
+      changed = true;
+      return cached;
     }
-
-    let parsed: ReturnType<typeof parseSourceFile>;
-    try {
-      parsed = parseSourceFile(resolvedRoot, relPath, content);
-    } catch {
-      if (cached) { delete index.files[relPath]; removed++; }
-      continue;
-    }
-    index.files[relPath] = {
-      path: relPath,
-      language: parsed.language,
-      mtimeMs: stat.mtimeMs,
-      sha256: hash,
-      imports: parsed.imports,
-      exports: parsed.exports,
-      symbols: parsed.symbols
-    };
-    updated++;
+    // Generated single-line JS occasionally ships without a .min.js suffix.
+    if (/\.[cm]?jsx?$/i.test(file) && content.length >= 8192 && content.split(/\r?\n/).some(line => line.length >= 8192)) return;
+    const parsed = options.preview ? parseGenericFile(file, content) : parseSourceFile(root, file, content);
+    stats.updated++;
+    return index.files[file] = { ...parsed, ...(options.preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
   }
-
-  const indexDiskPath = path.join(resolvedRoot, GRAPH_DIR, INDEX_FILE);
-  if (updated || removed) invalidateLookup(index);
-  if (updated || removed || touched || !fs.existsSync(indexDiskPath)) {
-    try { saveGraphIndex(resolvedRoot, index); } catch { /* Read-only worktrees use the memory index. */ }
-  }
-
-  const stalePatterns = reconcilePatternsWithIndex(resolvedRoot, index);
-
-  lastSync.set(index, { time: performance.now(), stalePatterns });
-  return {
-    index,
-    stats: {
-      scanned: currentFiles.length,
-      updated,
-      removed,
-      durationMs: Date.now() - startedAt,
-      stalePatterns
+  let frontier = new Set(files);
+  for (let depth = 0; frontier.size; depth++) {
+    const next = new Set<string>();
+    for (const file of frontier) {
+      if (visited.has(file)) continue;
+      visited.add(file);
+      stats.scanned++;
+      let node;
+      try { node = visit(file); } catch { /* A file can disappear between list and read. */ }
+      if (!node && Object.hasOwn(index.files, file)) {
+        delete index.files[file];
+        stats.removed++;
+      }
+      if (node && depth < (options.followImports ?? 0)) {
+        for (const source of node.imports) {
+          const target = resolveImport(file, source, candidate => paths.has(candidate));
+          if (target) next.add(target);
+        }
+      }
     }
-  };
+    frontier = next;
+  }
+  if (stats.updated || stats.removed) invalidateLookup(index);
+  if (changed || stats.updated || stats.removed) {
+    try { saveGraphIndex(root, index); } catch { /* Keep read-only worktrees usable. */ }
+  }
+  stats.durationMs = performance.now() - start;
+  return { index, stats };
+}
+
+export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean } = {}) {
+  const root = path.resolve(projectRoot);
+  const index = loadGraphIndex(root);
+  const previous = scopes.get(index);
+  const force = options === true || (typeof options === "object" && options.fullSync);
+  if (!force && previous?.scope.mode === "full" && previous.scope.knownFiles.length <= 500 && performance.now() - previous.time < SYNC_TTL_MS) {
+    return { index, ...previous.scope, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
+  }
+  const { knownFiles, git } = listWorkspaceFiles(root);
+  const dirty = git && !force && knownFiles.length > 500 ? gitDirtyFiles(root) : null;
+  const scope: Scope = { knownFiles, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
+  const patterns = loadArchGuide(root).patterns.map(p => p.entry.split("#")[0]);
+  const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];
+  const { stats } = indexSpecificFiles(root, files, { paths: scope.paths, preview: scope.mode === "jit" });
+  if (patterns.length) indexSpecificFiles(root, patterns, { paths: scope.paths });
+  stats.stalePatterns = reconcilePatternsWithIndex(root, index);
+  scopes.set(index, { scope, time: performance.now(), stalePatterns: stats.stalePatterns });
+  return { index, ...scope, stats };
 }

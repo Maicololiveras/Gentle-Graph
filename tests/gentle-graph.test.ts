@@ -177,3 +177,104 @@ it("finds re-export dependents and bounds all compact read-tool responses", () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+import { execFileSync } from "node:child_process";
+import { loadGraphIndex } from "../lib/gentle-graph/store.ts";
+
+function git(root: string, ...args: string[]) {
+  execFileSync("git", ["-c", "user.name=Graph Test", "-c", "user.email=test@example.invalid", ...args], { cwd: root, stdio: "pipe" });
+}
+
+function largeRepo(t: import("node:test").TestContext, count = 550) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "graph-jit-"));
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, { recursive: true, force: true }); });
+  git(root, "init", "-q");
+  fs.writeFileSync(path.join(root, ".gitignore"), ".gentle-graph/\nignored/\n");
+  for (let i = 0; i < count; i++) fs.writeFileSync(path.join(root, `f${i}.ts`), `export function f${i}() {}\n`);
+  for (const [file, source] of Object.entries({
+    "billing.ts": 'import { helper } from "./support";\nexport function targetFn() { return helper(); }',
+    "support.ts": "export function helper() {}",
+    "caller.ts": 'import { targetFn } from "./billing";\nexport function indirect() { return targetFn(); }',
+    "entry.ts": 'import { indirect } from "./caller";\nexport function start() { return indirect(); }'
+  })) fs.writeFileSync(path.join(root, file), source);
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "fixture");
+  return root;
+}
+
+it("limits a cold guide to the relevant neighborhood and follows relative imports", t => {
+  const root = largeRepo(t);
+  const guide = graphGuide("billing", { projectRoot: root });
+  assert.ok(guide.recommendedModules.some(m => m.file === "billing.ts"));
+  const state = syncGraphIndex(root);
+  assert.equal(state.mode, "jit");
+  assert.equal(state.knownFiles.length, 554);
+  assert.ok(Object.keys(state.index.files).length < 40);
+  assert.ok(state.index.files["support.ts"]);
+});
+
+it("discovers cold callers and transitive importers with full-index parity", t => {
+  const root = largeRepo(t);
+  const opts = { projectRoot: root };
+  graphGuide("billing", opts);
+  assert.ok(!loadGraphIndex(root).files["caller.ts"]);
+  const impact = graphImpact("targetFn", opts);
+  assert.ok(impact.affectedFiles.includes("caller.ts"));
+  assert.ok(impact.affectedFiles.includes("entry.ts"));
+  assert.ok(loadGraphIndex(root).files["caller.ts"]);
+  const inspection = graphInspect("billing.ts#targetFn", { ...opts, depth: 2 });
+  assert.ok(inspection[0].callers.some(c => c.name === "start"));
+  assert.ok(Object.keys(loadGraphIndex(root).files).length < 40);
+  syncGraphIndex(root, { fullSync: true });
+  assert.deepEqual(graphImpact("targetFn", opts), impact);
+});
+
+it("picks up untracked, edited and deleted source on the next JIT query", t => {
+  const root = largeRepo(t);
+  graphGuide("billing", { projectRoot: root });
+  const file = path.join(root, "new caller.ts");
+  fs.writeFileSync(file, "export function hot() { return targetFn(); }");
+  assert.ok(graphImpact("targetFn", { projectRoot: root }).directCallers.some(c => c.name === "hot"));
+  fs.writeFileSync(file, "export function replacement() {}");
+  graphGuide("billing", { projectRoot: root });
+  assert.equal(loadGraphIndex(root).files["new caller.ts"].symbols[0]?.name, "replacement");
+  fs.unlinkSync(file);
+  graphGuide("billing", { projectRoot: root });
+  assert.ok(!loadGraphIndex(root).files["new caller.ts"]);
+  assert.ok(Object.keys(loadGraphIndex(root).files).length < 40);
+});
+
+it("returns all callers past the grep cap and keeps linked worktrees independent", t => {
+  const root = largeRepo(t);
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "graph-worktree-"));
+  t.after(() => { clearMemoryCache(other); fs.rmSync(other, { recursive: true, force: true }); });
+  git(root, "worktree", "add", "--detach", other, "HEAD");
+  for (let i = 0; i < 90; i++) fs.writeFileSync(path.join(other, `f${i}.ts`), `export function f${i}() { return targetFn(); }`);
+  assert.equal(graphImpact("targetFn", { projectRoot: other }).directCallers.length, 91);
+  assert.equal(graphImpact("targetFn", { projectRoot: root }).directCallers.length, 1);
+});
+
+it("runs all read tools outside Git", t => {
+  const root = makeTempProject();
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, { recursive: true, force: true }); });
+  assert.equal(syncGraphIndex(root).mode, "full");
+  assert.ok(graphGuide("auth", { projectRoot: root }).recommendedModules.length);
+  assert.ok(graphInspect("verifyToken", { projectRoot: root }).length);
+  assert.ok(graphImpact("verifyToken", { projectRoot: root }).relatedTests.length);
+});
+
+it("switches above 500 files, respects gitignore and scopes nested projects", t => {
+  const root = largeRepo(t, 496);
+  assert.equal(syncGraphIndex(root).mode, "full");
+  const nested = path.join(root, "nested");
+  fs.mkdirSync(nested);
+  fs.mkdirSync(path.join(nested, "ignored"));
+  fs.writeFileSync(path.join(nested, "ignored", "secret.ts"), "export function hidden() {}");
+  fs.writeFileSync(path.join(nested, "-active.ts"), "export function active() {}");
+  clearMemoryCache(root);
+  const state = syncGraphIndex(root);
+  assert.equal(state.mode, "jit");
+  assert.equal(state.knownFiles.length, 501);
+  const inner = syncGraphIndex(nested);
+  assert.deepEqual(inner.knownFiles, ["-active.ts"]);
+});

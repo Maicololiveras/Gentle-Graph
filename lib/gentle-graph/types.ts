@@ -24,6 +24,7 @@ export interface CodeSymbol {
 }
 
 export interface FileNode {
+  preview?: boolean;
   path: string;
   language: string;
   mtimeMs: number;

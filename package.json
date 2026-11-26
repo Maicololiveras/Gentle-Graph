@@ -9,6 +9,7 @@
     "skills": ["./skills"]
   },
   "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
     "test": "node --test tests/gentle-graph.test.ts"
   },
   "engines": {
