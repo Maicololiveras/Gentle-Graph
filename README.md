@@ -25,3 +25,9 @@ node --input-type=module -e "import { graphInspect } from './lib/gentle-graph/in
 Cada worktree conserva su índice en `.gentle-graph/index.json`. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
 
 [Integrar con Gentle Shell y configurar subagentes](docs/gentle-graph-integration.md)
+
+## Rendimiento
+
+La extensión carga el índice en la primera consulta. Durante los dos segundos siguientes, las consultas del mismo worktree reutilizan el escaneo anterior. Al vencer esa ventana, el motor compara las fechas de modificación y calcula SHA-256 para los archivos que cambiaron. Omite archivos mayores de 256 KiB y fuentes con sufijos como `.min.js` y `.bundle.js`.
+
+Los mapas en memoria permiten buscar directamente un símbolo por nombre o identificador y recuperar sus llamadores por nombre. El tiempo de recorrer dependencias y de preparar recomendaciones depende del número de resultados. La respuesta de la extensión tiene un máximo de 2400 caracteres para guía, 3000 para inspección y 2000 para impacto.

@@ -1,0 +1,72 @@
+{
+  "explore": {
+    "add": [
+      "graph_guide",
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "worker": {
+    "add": [
+      "graph_guide",
+      "graph_inspect",
+      "graph_impact",
+      "graph_register_pattern"
+    ],
+    "remove": []
+  },
+  "verify": {
+    "add": [
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "jd-fix-agent": {
+    "add": [
+      "graph_guide",
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "jd-judge-a": {
+    "add": [
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "jd-judge-b": {
+    "add": [
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "gentle-ai-explore": {
+    "add": [
+      "graph_guide",
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  },
+  "gentle-ai-worker": {
+    "add": [
+      "graph_guide",
+      "graph_inspect",
+      "graph_impact",
+      "graph_register_pattern"
+    ],
+    "remove": []
+  },
+  "gentle-ai-verify": {
+    "add": [
+      "graph_inspect",
+      "graph_impact"
+    ],
+    "remove": []
+  }
+}

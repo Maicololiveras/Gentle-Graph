@@ -1,0 +1,17 @@
+{
+  "name": "gentle-graph",
+  "private": true,
+  "type": "module",
+  "description": "Grafo de código y guía de reutilización para los agentes de Gentle Shell.",
+  "keywords": ["pi-package", "gentle-shell", "code-graph"],
+  "pi": {
+    "extensions": ["./extensions/gentle-graph.ts"],
+    "skills": ["./skills"]
+  },
+  "scripts": {
+    "test": "node --test tests/gentle-graph.test.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
