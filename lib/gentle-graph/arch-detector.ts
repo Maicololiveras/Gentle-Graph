@@ -12,7 +12,7 @@ export interface ArchitectureProfile {
 }
 
 export function isManifest(file: string) {
-  return /(?:\.csproj|(?:^|\/)(?:package\.json|pyproject\.toml|requirements\.txt|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|composer\.json|Gemfile))$/i.test(file);
+  return /(?:\.csproj|(?:^|\/)(?:package\.json|pyproject\.toml|requirements\.txt|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|composer\.json|Gemfile|Package\.swift|pubspec\.yaml))$/i.test(file);
 }
 
 function readSmall(root: string, file: string) {
@@ -71,6 +71,15 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   const packages = new Set<string>();
   for (const { file, text } of contents) {
     if (/(?:pom\.xml|build\.gradle(?:\.kts)?)$/.test(file) && /org\.springframework\.boot|spring-boot-starter/.test(text)) packages.add("Spring Boot");
+    if (/build\.gradle(?:\.kts)?$/.test(file)) {
+      if (/io\.ktor/.test(text)) packages.add("Ktor");
+      if (/com\.android\.(?:application|library)|androidx\.lifecycle/.test(text)) packages.add("Android");
+    }
+    if (file.endsWith("Package.swift") && /\bSwiftUI\b/.test(text)) packages.add("SwiftUI");
+    if (file.endsWith("pubspec.yaml")) {
+      for (const [pattern,name] of [[/^\s+flutter\s*:/m,"Flutter"],[/^\s+(?:flutter_)?bloc\s*:/m,"BLoC"],[/^\s+(?:(?:flutter|hooks)_)?riverpod\s*:/m,"Riverpod"]] as const)
+        if (pattern.test(text)) packages.add(name);
+    }
     if (file.endsWith("composer.json")) {
       try {
         const manifest=JSON.parse(text);
@@ -104,7 +113,10 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
     [/^react$/,"React"], [/^next$/,"Next.js"], [/^@angular\/core$/,"Angular"],
     [/^@nestjs\/core$/,"NestJS"], [/^FastAPI$/i,"FastAPI"], [/^Django$/i,"Django"]
   ] as const) if ([...packages].some(pkg => pattern.test(pkg))) profile.frameworks.push(label);
-  for (const name of ["Spring Boot","Laravel","Symfony","Rails"]) if(packages.has(name)) profile.frameworks.push(name);
+  for (const name of ["Spring Boot","Laravel","Symfony","Rails","Ktor","Android","SwiftUI","Flutter","BLoC","Riverpod"]) if(packages.has(name)) profile.frameworks.push(name);
+  if (signals.includes("SwiftUI") && !profile.frameworks.includes("SwiftUI")) profile.frameworks.push("SwiftUI");
+  if (profile.frameworks.includes("SwiftUI") && /ViewModel\.swift$/im.test(inventory)) arch.push("SwiftUI MVVM");
+  if (packages.has("Android") && /ViewModel\.kt$/im.test(inventory)) arch.push("Android MVVM");
   if (signals.includes("Spring Boot") && !profile.frameworks.includes("Spring Boot")) profile.frameworks.push("Spring Boot");
   if (/(?:^|\/)routes\/(?:[^\n]*\/)?\+(?:page(?:\.server\.ts|\.svelte)|layout\.svelte)$/m.test(inventory)) arch.push("SvelteKit");
   if (/\.xaml$/im.test(inventory)) {
