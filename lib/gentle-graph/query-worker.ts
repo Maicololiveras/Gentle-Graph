@@ -43,17 +43,18 @@ const profileCache={};
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
-  let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
+  let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root,JSON.stringify([q.kind,q.term])).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
   if(prepared && state){state.inventory=prepared[1]??undefined;adoptGitSnapshot(state); }
   const key=JSON.stringify(q);
   const cacheKey=key+indexStamp(q.root);
   const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
-  let text:string,partial=false;
+  let text:string,partial=false,mode:string,indexed:number;
   beginGraphWrites(q.root);
   try {
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
+  mode=scope.degraded?"degraded":scope.mode;
   if(q.kind==="guide"){
     text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache));
   } else if(q.kind==="inspect"){
@@ -65,29 +66,31 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
     text=formatImpact(result);
     partial=!!result.partial;
   }
+  indexed=Object.keys(scope.index.files).length;
   } finally {
     try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
   }
+  const reply={text,partial,mode,indexed};
   if(state && !partial && !degraded){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
-    state.results.set(key+indexStamp(q.root),text);
+    state.results.set(key+indexStamp(q.root),reply);
   }
-  return text;
+  return reply;
 }
 parentPort.on("message",async({query,prepared,inventoryReady,degraded}:{query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   try {
     const received = profile ? performance.now() : 0;
-    let text:string;
-    try{text=await handle(query,prepared,degraded);}
+    let result:Awaited<ReturnType<typeof handle>>;
+    try{result=await handle(query,prepared,degraded);}
     catch(error){
       if(!(error instanceof GitScopeError) || degraded)throw error;
-      text=await handle(query,undefined,true);
+      result=await handle(query,undefined,true);
     }
     if(profile && prepared && inventoryReady !== undefined) {
       const start = initial.profileStart!;
       console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,compilerEnd,received,end:performance.now()}));
     }
-    parentPort.postMessage({text});
+    parentPort.postMessage({result});
   }
   catch(e){if(query.kind==="impact" && e instanceof GitScopeError && e.timedOut) parentPort.postMessage({timedOut:true});
     else parentPort.postMessage({error:String(e)});}

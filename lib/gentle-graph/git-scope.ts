@@ -228,7 +228,8 @@ export interface GitSnapshot {
   inventory?: Inventory;
   projection?: string[];
   greps:Map<string,string[]>;
-  results:Map<string,string>;
+  firstQuery?:string;
+  results:Map<string,{text:string;mode:string;indexed:number;partial:boolean}>;
   checkedAt:number;
   markers:string[];
   stamp:string;
@@ -287,6 +288,33 @@ async function snapshotFromChanges(root:string,layout:GitLayout,files:string[],u
 export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
+  // Only a persisted graph needs a worktree-wide delta. Git's index supplies
+  // tracked names for import resolution; enumerate just untracked paths in
+  // parallel with the worktree search (including untracked callers and tests).
+  if(inspectTerm && layout && !fs.existsSync(path.join(root,".gentle-graph","index.json")) &&
+      !fs.existsSync(path.join(root,".gentle-graph","index.sqlite"))){
+    const tracked=readTrackedIndexPaths(root,layout);
+    if(tracked){
+      const name=inspectTerm.split("#").at(-1) ?? inspectTerm;
+      const projected=impact && /^[a-z][a-zA-Z0-9_]*$/.test(name) && fs.existsSync(path.join(root,"tsconfig.json"));
+      const [untracked,search]=await Promise.all([
+        requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+        projected ? grepImpactProjection(root,name) :
+          gitGrepFiles(root,name,Infinity,null).then(hits=>hits && ({hits,projection:undefined}))
+      ]);
+      if(untracked && search){
+        const state=await snapshotFromChanges(root,layout,tracked,untracked,[],search.hits);
+        if(state){
+          const [snapshot]=state;
+          snapshot.dirty=[];
+          snapshot.firstQuery=JSON.stringify([impact?"impact":"inspect",inspectTerm]);
+          snapshot.greps.set(JSON.stringify([name]),search.hits);
+          snapshot.projection=search.projection;
+          return state;
+        }
+      }
+    }
+  }
   // Git for Windows scans tracked and untracked entries in one status pass.
   // Avoid a second filesystem walk in Node and sequential fallbacks on NTFS.
   if(layout && process.platform==="win32"){
@@ -358,12 +386,12 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
   return Promise.all([gitSnapshot(root),gitSessionInventory(root,null)]);
 }
 
-export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
+export async function gitSnapshot(projectRoot:string,query?:string):Promise<GitSnapshot|null>{
   const root=path.resolve(projectRoot);
   const old=snapshots.get(root);
   // The TTL bounds discovery of previously clean or new paths. A modified
   // dirty file, branch/index change or manual guide edit invalidates immediately.
-  if(old && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
+  if(old && (!old.firstQuery || old.firstQuery===query) && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
   const [rows,layout]=await Promise.all([
     requireGitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
     layouts.get(root)??requireGitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))

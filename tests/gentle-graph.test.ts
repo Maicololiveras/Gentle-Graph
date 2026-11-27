@@ -169,9 +169,11 @@ it("finds re-export dependents and bounds all compact read-tool responses", () =
     inspect[0].snippet = long;
     impact.affectedFiles.push(long);
     guide.recommendedModules[0].reuseNotes.push(long);
-    assert.equal(formatGuide(guide).length, 1199);
-    assert.equal(formatInspect(inspect).length, 3000);
-    assert.equal(formatImpact(impact).length, 2000);
+    for(const [output,max] of [[formatGuide(guide),1199],[formatInspect(inspect),3000],[formatImpact(impact),2000]] as const){
+      assert.ok(Buffer.byteLength(output)<=max);
+      assert.ok(output.endsWith("\n…"));
+      assert.ok(!output.includes("xxx"));
+    }
   } finally {
     clearMemoryCache(root);
     fs.rmSync(root, { recursive: true, force: true });
@@ -544,3 +546,17 @@ it("keeps Go package-private transitive callers inside their package", t=>{
   assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });
 import "./sqlite-store.test.ts";
+
+
+it("keeps the guide direct and hides secondary declarations only alongside codemode",async()=>{
+  const {default:register}=await import("../extensions/gentle-graph.ts");
+  const tools=new Map();
+  register({registerTool:tool=>tools.set(tool.name,tool),on:()=>{}} as any);
+  assert.equal(tools.get("graph_guide").prepareLoadout,undefined);
+  for(const name of ["graph_impact","graph_inspect","graph_register_pattern"]){
+    const {prepareLoadout}=tools.get(name);
+    assert.equal(prepareLoadout({declared:[{name}]}),undefined);
+    assert.equal(prepareLoadout({declared:[{name:"codemode"}]}),undefined);
+    assert.deepEqual(prepareLoadout({declared:[{name},{name:"codemode"}]}),{hiddenDeclarations:[name]});
+  }
+});

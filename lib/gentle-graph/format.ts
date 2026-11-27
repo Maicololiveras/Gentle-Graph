@@ -2,11 +2,33 @@ import type { GuideRecommendation, ImpactResult, InspectResult, PatternEntry, Sy
 
 function compact(lines: string[], limit: number): string {
   const text = lines.filter(Boolean).join("\n");
-  return text.length <= limit ? text : text.slice(0, limit - 1).trimEnd() + "…";
+  if(Buffer.byteLength(text)<=limit)return text;
+  const marker="…";
+  let remaining=limit-Buffer.byteLength("\n"+marker);
+  const complete:string[]=[];
+  for(const line of text.split("\n")){
+    const bytes=Buffer.byteLength(line)+(complete.length?1:0);
+    if(bytes>remaining)break;
+    complete.push(line);
+    remaining-=bytes;
+  }
+  return [...complete,marker].join("\n");
 }
 
 function field(label: string, values: string[]): string {
-  return values.length ? label + ": " + values.join(", ") : "";
+  if(!values.length)return "";
+  // Give long lists safe line boundaries so a large dependency set cannot
+  // displace its entire field when the final UTF-8 cap is applied.
+  const lines:string[]=[];
+  let line=label+": "+values[0];
+  for(const value of values.slice(1)){
+    if(line.length+value.length>160){
+      lines.push(line);
+      line="  "+value;
+    }else line+=", "+value;
+  }
+  lines.push(line);
+  return lines.join("\n");
 }
 
 function refs(values: SymbolRef[]): string[] {
@@ -29,7 +51,7 @@ export function formatGuide(g: GuideRecommendation): string {
   const blocks = g.subgraph.map(m => compact([
     m.symbol.id + ":" + m.symbol.line,
     ...[["Calls", m.callees], ["Called by", m.callers], ["Implemented by", m.implementations ?? []]].map(([label, items]: [string, SymbolRef[]]) =>
-      field(label, refs(items).slice(0, 3)).slice(0, 115)),
+      compact([field(label, refs(items).slice(0, 3))],115)),
     m.snippet.split("\n").slice(0,10).join("\n")
   ], 730));
   return compact([guide, ...blocks], 3000);
