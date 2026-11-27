@@ -316,3 +316,19 @@ it("reopens a large WAL index, updates and removes individual entries", async ()
     assert.equal(updated.files["2.ts"].mtimeMs,2);
   } finally { clearMemoryCache(root); fs.rmSync(root,{ recursive:true, force:true }); }
 });
+
+it("JIT literal search includes untracked source files and ignores graph artifacts", async () => {
+  const { gitGrepFiles } = await import("../lib/gentle-graph/git-scope.ts");
+  const { execFileSync } = await import("node:child_process");
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"graph-grep-"));
+  try {
+    execFileSync("git",["init","-q"],{cwd:dir});
+    fs.mkdirSync(path.join(dir,"src"));
+    fs.mkdirSync(path.join(dir,".gentle-graph"));
+    fs.writeFileSync(path.join(dir,"src","query.TS"),"export const value='-port[5]';");
+    fs.writeFileSync(path.join(dir,"client.py"),"query = 'alpha'");
+    fs.writeFileSync(path.join(dir,"note.md"),"alpha");
+    fs.writeFileSync(path.join(dir,".gentle-graph","generated.ts"),"alpha");
+    assert.deepEqual(gitGrepFiles(dir,["alpha","-port[5]"],Infinity)?.sort(),["client.py","src/query.TS"]);
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+});

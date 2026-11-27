@@ -42,9 +42,9 @@ function readBoundedSnippet(projectRoot: string, relFile: string, startLine: num
   }
 }
 
-// Retry broad frontiers without truncation. A failed Git search falls back
+// Collect unique paths once per frontier. A failed Git search falls back
 // to the full delta so it cannot silently hide callers.
-function searchFrontier(root: string, scope: ReturnType<typeof syncGraphIndex>, limit: number) {
+function searchFrontier(root: string, scope: ReturnType<typeof syncGraphIndex>) {
   const searched = new Set<string>();
   let complete = scope.mode === "full";
   return (terms: Iterable<string>): boolean => {
@@ -60,17 +60,12 @@ function searchFrontier(root: string, scope: ReturnType<typeof syncGraphIndex>, 
     const pending = [...literals].filter(term => term && !searched.has(term));
     if (!pending.length) return false;
     for (const term of pending) searched.add(term);
-    for (let offset = 0; offset < pending.length; offset += 32) {
-      const terms = pending.slice(offset, offset + 32);
-      let hits = gitGrepFiles(root, terms, limit + 1);
-      if (hits && hits.length > limit) hits = gitGrepFiles(root, terms, Infinity);
-      if (!hits) {
-        indexSpecificFiles(root, scope.knownFiles, { paths: scope.paths });
-        complete = true;
-        break;
-      }
-      indexSpecificFiles(root, hits, { paths: scope.paths, followImports: 1 });
-    }
+    // git reads literals on stdin, so large frontiers also fit the Windows command-line limit.
+    const hits = gitGrepFiles(root, pending, Infinity);
+    if (!hits) {
+      indexSpecificFiles(root, scope.knownFiles, { paths: scope.paths });
+      complete = true;
+    } else if (hits.length) indexSpecificFiles(root, hits, { paths: scope.paths, followImports: 1 });
     return true;
   };
 }
@@ -148,7 +143,7 @@ export function graphInspect(
   const maxMatches = options.maxMatches ?? 5;
   const scope = syncGraphIndex(resolved);
   const { index } = scope;
-  const search = searchFrontier(resolved, scope, 60);
+  const search = searchFrontier(resolved, scope);
   const name = symbolQuery.split("#").at(-1) ?? symbolQuery;
   search([name]);
   if (scope.mode === "jit" && !getLookup(index).symbolByName.has(name)) {
@@ -285,7 +280,7 @@ export function graphImpact(
   const resolved = path.resolve(options.projectRoot ?? process.cwd());
   const scope = syncGraphIndex(resolved);
   const { index } = scope;
-  const search = searchFrontier(resolved, scope, 80);
+  const search = searchFrontier(resolved, scope);
   const isFile = scope.paths.has(target);
   if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { paths: scope.paths, followImports: 1 });
   search(isFile ? (index.files[target]?.symbols ?? []).map(s => s.name) : [target.split("#").at(-1) ?? target]);

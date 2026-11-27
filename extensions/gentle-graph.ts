@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
@@ -11,10 +12,21 @@ import { clearMemoryCache } from "../lib/gentle-graph/store.ts";
 
 import { formatGuide, formatImpact, formatInspect, formatPattern } from "../lib/gentle-graph/format.ts";
 
-const GRAPH_PROMPT_HINT = "Use graph_guide for reuse, graph_inspect for callers, and graph_impact before refactoring. Use grep for literal searches.";
+const GRAPH_PROMPT_HINT = "Use graph tools when they replace exploration. Skip redundant lookups.";
 
 function resolveRoot(explicitRoot?: string, ctxCwd?: string): string {
 	return explicitRoot || ctxCwd || process.env.GENTLE_WORKTREE_ROOT || process.cwd();
+}
+
+function timedQuery(id: string, tool: string, query: () => string) {
+  const trace = process.env.GENTLE_BENCH_ENGINE_TRACE;
+  if (!trace) return asText(query());
+  const started = performance.now();
+  try { return asText(query()); }
+  finally {
+    try { appendFileSync(trace, JSON.stringify({id,tool,engineMs:performance.now()-started})+"\n"); }
+    catch { /* Optional telemetry cannot interrupt a query. */ }
+  }
 }
 
 function asText(value: string) {
@@ -61,7 +73,7 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				projectRoot?: string;
 				limit?: number;
 			};
-			return asText(formatGuide(graphGuide(intent, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), limit })));
+			return timedQuery(_toolCallId, "graph_guide", () => formatGuide(graphGuide(intent, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), limit })));
 		},
 	});
 
@@ -76,7 +88,7 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				depth?: number;
 				projectRoot?: string;
 			};
-			return asText(formatInspect(graphInspect(symbol, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), depth })));
+			return timedQuery(_toolCallId, "graph_inspect", () => formatInspect(graphInspect(symbol, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), depth })));
 		},
 	});
 
@@ -87,7 +99,7 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 		parameters: ImpactParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { target, projectRoot } = params as { target: string; projectRoot?: string };
-			return asText(formatImpact(graphImpact(target, { projectRoot: resolveRoot(projectRoot, ctx?.cwd) })));
+			return timedQuery(_toolCallId, "graph_impact", () => formatImpact(graphImpact(target, { projectRoot: resolveRoot(projectRoot, ctx?.cwd) })));
 		},
 	});
 

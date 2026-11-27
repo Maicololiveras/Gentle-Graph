@@ -10,6 +10,8 @@ const adapters = new Map<string, LanguageAdapter>();
 for (const adapter of [typescript, python, go, rust, csharp, xaml])
   for (const ext of adapter.extensions) adapters.set(ext, adapter);
 
+export const sourceExtensions = [...adapters.keys()];
+
 export function adapterFor(file: string) {
   return adapters.get(path.posix.extname(file).toLowerCase());
 }
