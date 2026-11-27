@@ -24,6 +24,8 @@ export function tokenizeIntent(text: string): string[] {
   return [...new Set(raw.flatMap(word => aliases[word] ? [word, aliases[word]] : [word]))];
 }
 
+export const isFixturePath = (file:string) => /(?:^|[\s\/\\])fixtures[\/\\]|\.fixture\.json\b|\.snap\b/i.test(file);
+
 function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
   const candidates: string[] = [];
   for (const top of ["AGENTS.md", "README.md"]) {
@@ -46,23 +48,13 @@ function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
     }
   }
 
-  return candidates
-    .filter((rel) => {
-      const lower = rel.toLowerCase();
-      return lower === "agents.md" || tokens.some((t) => lower.includes(t));
-    })
-    .slice(0, 6);
+  return candidates.filter(doc => !isFixturePath(doc)).map(doc=>{
+    const words = tokenizeIntent(path.posix.basename(doc, ".md"));
+    return { doc, matches:words.filter(w=>tokens.includes(w)).length };
+  }).filter(row=>row.matches>0).sort((a,b)=>b.matches-a.matches || a.doc.localeCompare(b.doc)).slice(0,2).map(row=>row.doc);
 }
 
-export function recommendPath(
-  projectRoot: string,
-  index: GraphIndex,
-  intent: string,
-  limit = 5
-): GuideRecommendation {
-  const tokens = tokenizeIntent(intent);
-  const guide = loadArchGuide(projectRoot);
-
+export function rankModules(index: GraphIndex, tokens: string[], limit: number): ModuleRecommendation[] {
   const ranked: ModuleRecommendation[] = Object.values(index.files)
     .map((fileNode) => {
       const pathLower = fileNode.path.toLowerCase();
@@ -83,7 +75,7 @@ export function recommendPath(
         .map((s) => `${s.name}: ${s.reuseTag}`);
 
       const boundaries = fileNode.symbols
-        .filter((s) => s.boundaryTag)
+        .filter((s) => s.boundaryTag && !isFixturePath(s.boundaryTag))
         .map((s) => `${s.name}: ${s.boundaryTag}`);
 
       if (reuseNotes.length > 0 && score > 0) score += 2;
@@ -118,6 +110,18 @@ export function recommendPath(
     }
   }
 
+  return scoredModules;
+}
+
+export function recommendPath(
+  projectRoot: string,
+  index: GraphIndex,
+  intent: string,
+  limit = 5,
+  guide = loadArchGuide(projectRoot)
+): GuideRecommendation {
+  const tokens = tokenizeIntent(intent);
+  const scoredModules = rankModules(index, tokens, limit);
   const matchingPatterns = guide.patterns.filter((p) => {
     if (p.stale) return false;
     const blob = `${p.domain} ${p.entry} ${p.guidance} ${p.files.join(" ")}`.toLowerCase();

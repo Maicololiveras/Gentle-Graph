@@ -169,7 +169,7 @@ it("finds re-export dependents and bounds all compact read-tool responses", () =
     inspect[0].snippet = long;
     impact.affectedFiles.push(long);
     guide.recommendedModules[0].reuseNotes.push(long);
-    assert.equal(formatGuide(guide).length, 2400);
+    assert.equal(formatGuide(guide).length, 1199);
     assert.equal(formatInspect(inspect).length, 3000);
     assert.equal(formatImpact(impact).length, 2000);
   } finally {
@@ -233,7 +233,7 @@ it("picks up untracked, edited and deleted source on the next JIT query", t => {
   const root = largeRepo(t);
   graphGuide("billing", { projectRoot: root });
   const file = path.join(root, "new caller.ts");
-  fs.writeFileSync(file, "export function hot() { return targetFn(); }");
+  fs.writeFileSync(file, 'import {targetFn} from "./billing";\nexport function hot() { return targetFn(); }');
   assert.ok(graphImpact("targetFn", { projectRoot: root }).directCallers.some(c => c.name === "hot"));
   fs.writeFileSync(file, "export function replacement() {}");
   graphGuide("billing", { projectRoot: root });
@@ -249,7 +249,7 @@ it("returns all callers past the grep cap and keeps linked worktrees independent
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "graph-worktree-"));
   t.after(() => { clearMemoryCache(other); fs.rmSync(other, { recursive: true, force: true }); });
   git(root, "worktree", "add", "--detach", other, "HEAD");
-  for (let i = 0; i < 90; i++) fs.writeFileSync(path.join(other, `f${i}.ts`), `export function f${i}() { return targetFn(); }`);
+  for (let i = 0; i < 90; i++) fs.writeFileSync(path.join(other, `f${i}.ts`), `import {targetFn} from "./billing";\nexport function f${i}() { return targetFn(); }`);
   assert.equal(graphImpact("targetFn", { projectRoot: other }).directCallers.length, 91);
   assert.equal(graphImpact("targetFn", { projectRoot: root }).directCallers.length, 1);
 });
@@ -329,7 +329,7 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     fs.writeFileSync(path.join(dir,"client.py"),"query = 'alpha'");
     fs.writeFileSync(path.join(dir,"note.md"),"alpha");
     fs.writeFileSync(path.join(dir,".gentle-graph","generated.ts"),"alpha");
-    assert.deepEqual(gitGrepFiles(dir,["alpha","-port[5]"],Infinity)?.sort(),["client.py","src/query.TS"]);
+    assert.deepEqual((await gitGrepFiles(dir,["alpha","-port[5]"],Infinity))?.sort(),["client.py","src/query.TS"]);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -350,4 +350,157 @@ it("ranks a relevant imported implementation used by the entry among the first t
     assert(!modules(3).includes("unused.ts"));
     assert.equal(new Set(modules(5)).size,5);
   } finally { clearMemoryCache(root); fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+it("reuses Git searches and invalidates them on repeated edits of a dirty file", async t => {
+  const {gitSnapshot, gitGrepFiles, clearGitSession} = await import("../lib/gentle-graph/git-scope.ts");
+  const root = largeRepo(t, 1);
+  t.after(clearGitSession);
+  const file = path.join(root,"caller.ts");
+  fs.appendFileSync(file,"\n// firstNeedle");
+  const state = await gitSnapshot(root);
+  assert.deepEqual(await gitGrepFiles(root,"firstNeedle",80,state),["caller.ts"]);
+  assert.strictEqual(await gitSnapshot(root),state);
+  assert.deepEqual(await gitGrepFiles(root,["firstNeedle","firstNeedle"],1,state),["caller.ts"]);
+  assert.equal(state.greps.size,1);
+  fs.writeFileSync(file,"// replacementNeedle");
+  assert.notStrictEqual(await gitSnapshot(root),state);
+  assert.deepEqual(await gitGrepFiles(root,"firstNeedle"),[]);
+});
+
+it("marks exhausted impact searches as partial", t => {
+  const root=makeTempProject();
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  assert.equal(graphImpact("verifyToken",{projectRoot:root,budgetMs:0}).partial,true);
+});
+
+it("omits fixture paths and caps intent-related guide documents", t => {
+  const root=makeTempProject();
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,"contracts","fixtures"));
+  for(const name of ["auth.fixture.json","fixtures/auth.md","auth.snap","auth-service.md","auth-policy.md","calendar.md"])
+    fs.writeFileSync(path.join(root,"contracts",name),"auth");
+  const result=graphGuide("auth",{projectRoot:root});
+  assert.equal(result.relevantDocs.length,2);
+  assert.ok(result.relevantDocs.every(f=>f.includes("auth")));
+  assert.doesNotMatch(JSON.stringify([result.boundaries,result.relevantDocs]),/fixture|\.snap|calendar/);
+});
+
+it("coalesces concurrent host queries and releases workers on shutdown", async t=>{
+  const {sessionQuery,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  const root=makeTempProject();
+  t.after(async()=>{await closeQuerySessions();fs.rmSync(root,{recursive:true,force:true});});
+  const q={kind:"inspect" as const,root,term:"verifyToken"};
+  const first=sessionQuery(q);
+  assert.equal(first,sessionQuery(q));
+  assert.match(await first,/src\/auth.ts/);
+});
+
+it("refreshes a worker result when a dirty source is edited again", async t=>{
+  const {sessionQuery,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  const root=largeRepo(t,1);
+  const file=path.join(root,"caller.ts");
+  const q={kind:"inspect" as const,root,term:"editableCaller"};
+  try {
+    fs.writeFileSync(file,"export function editableCaller() { return 12; }");
+    assert.match(await sessionQuery(q),/return 12/);
+    fs.writeFileSync(file,"export function editableCaller() { return 234; }");
+    assert.match(await sessionQuery(q),/return 234/);
+  } finally {await closeQuerySessions();}
+});
+
+it("reports a broken Git index and recovers on the next session query", {timeout:15000}, async t => {
+  const root = largeRepo(t, 1);
+  const {sessionQuery, closeQuerySessions} = await import("../lib/gentle-graph/query-session.ts");
+  const indexPath = path.join(root, ".git", "index");
+  const original = fs.readFileSync(indexPath);
+  fs.writeFileSync(indexPath, "broken Git index");
+  assert.throws(() => graphGuide("billing", {projectRoot: root}), /Git ls-files failed/);
+  try {
+    await assert.rejects(sessionQuery({root,kind:"guide",term:"billing"}), /Git .* failed/);
+    assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
+    fs.writeFileSync(indexPath, original);
+    assert.match(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
+  } finally { await closeQuerySessions(); }
+});
+
+it("keeps the persisted snapshot when only a source timestamp changes", t => {
+  const root = makeTempProject();
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, {recursive: true, force: true}); });
+  const {index} = syncGraphIndex(root);
+  const disk = path.join(root, ".gentle-graph", "index.json");
+  const snapshot = fs.readFileSync(disk, "utf8");
+  const source = path.join(root, "src", "auth.ts");
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(source, future, future);
+  const {stats} = syncGraphIndex(root, {fullSync: true});
+  assert.equal(stats.updated, 0);
+  assert.equal(index.files["src/auth.ts"].mtimeMs, fs.statSync(source).mtimeMs);
+  assert.equal(fs.readFileSync(disk, "utf8"), snapshot);
+});
+
+it("prunes name-only matches while following aliases, barrels and private local callers", t=>{
+  const root=largeRepo(t);
+  const put=(name:string,source:string)=>fs.writeFileSync(path.join(root,name),source);
+  put("overlay.ts","export function loadToolOverlays() { return 1; }");
+  put("barrel.ts",'export {loadToolOverlays as load} from "./overlay";');
+  put("consumer.ts",'import {load as read} from "./barrel";\nfunction get() { return read(); }\nexport function discoverAgentsIn(){ return get(); }\nexport function unrelated(){return other.read();}');
+  put("second.ts",'import {discoverAgentsIn} from "./consumer";\nexport function main(){return discoverAgentsIn();}');
+  for(let i=0;i<220;i++)put("f"+i+".ts",`// loadToolOverlays\nexport function unrelated${i}(){ return get(); }`);
+  git(root,"add",".");
+  git(root,"commit","-qm","module proof");
+  const impact=graphImpact("loadToolOverlays",{projectRoot:root});
+  assert.ok(!impact.partial);
+  assert.deepEqual(impact.directCallers.map(s=>s.name),["get"]);
+  assert.deepEqual(impact.transitiveCallers.map(s=>s.name),["discoverAgentsIn","main"]);
+  assert.deepEqual([...impact.affectedFiles].sort(),["barrel.ts","consumer.ts","second.ts"]);
+  assert.ok(Object.keys(loadGraphIndex(root).files).length<15);
+});
+
+it("matches Git's tracked, untracked, staged and unstaged paths across index layouts", async t => {
+  const {gitWorkspaceInventory,gitInventory,gitDirtyFilesSync} = await import("../lib/gentle-graph/git-scope.ts");
+  const {readTrackedIndexPaths} = await import("../lib/gentle-graph/git-index-paths.ts");
+  const root=largeRepo(t);
+  git(root,"update-index","--index-version=2");
+  fs.writeFileSync(path.join(root,"f1.ts"),"export const staged = true;");
+  git(root,"add","f1.ts");
+  fs.writeFileSync(path.join(root,"f2.ts"),"export const dirty = true;");
+  fs.writeFileSync(path.join(root,"pending.ts"),"export const pending = true;");
+  const plain=gitInventory(root);
+  const native=gitWorkspaceInventory(root);
+  assert.deepEqual(native.files,plain.files);
+  assert.deepEqual(new Set(native.dirty),new Set(gitDirtyFilesSync(root,plain.untracked)));
+  assert.deepEqual(readTrackedIndexPaths(root),plain.files.filter(file=>!plain.untracked.includes(file)));
+  fs.mkdirSync(path.join(root,"nested"));
+  assert.equal(readTrackedIndexPaths(path.join(root,"nested")),undefined);
+  const linked=fs.mkdtempSync(path.join(os.tmpdir(),"gg-native-linked-"));
+  git(root,"worktree","add","--detach",linked,"HEAD");
+  t.after(()=>fs.rmSync(linked,{recursive:true,force:true}));
+  assert.equal(readTrackedIndexPaths(linked),undefined);
+
+  git(root,"update-index","--index-version=4");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  assert.deepEqual(gitWorkspaceInventory(root).files,gitInventory(root).files);
+  git(root,"update-index","--index-version=2");
+  git(root,"update-index","--skip-worktree","f3.ts");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  git(root,"update-index","--no-skip-worktree","f3.ts");
+  git(root,"update-index","--split-index");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  assert.deepEqual(gitWorkspaceInventory(root).files,gitInventory(root).files);
+});
+
+it("keeps Go package-private transitive callers inside their package", t=>{
+  const root=largeRepo(t);
+  for(const dir of ["engine","other"])fs.mkdirSync(path.join(root,dir));
+  const put=(file:string,src:string)=>fs.writeFileSync(path.join(root,file),src);
+  put("engine/root.go","package engine\nfunc CalculateThing() {}\nfunc get() { CalculateThing() }");
+  put("engine/caller.go","package engine\nfunc Execute() { get() }");
+  put("other/noise.go","package other\nfunc get() {}\nfunc Detached() { get() }");
+  git(root,"add",".");
+  git(root,"commit","-qm","Go package scope");
+  const result=graphImpact("CalculateThing",{projectRoot:root});
+  assert.ok(result.transitiveCallers.some(s=>s.name==="Execute"));
+  assert.ok(!result.transitiveCallers.some(s=>s.name==="Detached"));
+  assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });

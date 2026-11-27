@@ -1,28 +1,28 @@
+import { createRequire } from "node:module";
+import {sessionQuery,closeQuerySessions} from "../lib/gentle-graph/query-session.ts";
 import { appendFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
 import {
-	graphGuide,
-	graphImpact,
-	graphInspect,
 	graphRegisterPattern,
 } from "../lib/gentle-graph/index.ts";
+import {clearGitSession} from "../lib/gentle-graph/git-scope.ts";
 import { clearMemoryCache } from "../lib/gentle-graph/store.ts";
 
-import { formatGuide, formatImpact, formatInspect, formatPattern } from "../lib/gentle-graph/format.ts";
+import { formatPattern } from "../lib/gentle-graph/format.ts";
 
-const GRAPH_PROMPT_HINT = "Use graph tools when they replace exploration. Skip redundant lookups.";
+const GRAPH_PROMPT_HINT = "Use graph tools when they replace exploration. Register patterns via codemode when available.";
 
 function resolveRoot(explicitRoot?: string, ctxCwd?: string): string {
 	return explicitRoot || ctxCwd || process.env.GENTLE_WORKTREE_ROOT || process.cwd();
 }
 
-function timedQuery(id: string, tool: string, query: () => string) {
+async function timedQuery(id: string, tool: string, query: () => Promise<string>) {
   const trace = process.env.GENTLE_BENCH_ENGINE_TRACE;
-  if (!trace) return asText(query());
+  if (!trace) return asText(await query());
   const started = performance.now();
-  try { return asText(query()); }
+  try { return asText(await query()); }
   finally {
     try { appendFileSync(trace, JSON.stringify({id,tool,engineMs:performance.now()-started})+"\n"); }
     catch { /* Optional telemetry cannot interrupt a query. */ }
@@ -62,6 +62,14 @@ const RegisterPatternParams = Type.Object({
 	projectRoot: Type.Optional(Type.String()),
 });
 
+function registerPatternLoadout(){
+  try {
+    const host=createRequire(import.meta.url)("../lib/hidden-tools.ts");
+    if(typeof host.hideBehindCodemode==="function") return {prepareLoadout:host.hideBehindCodemode("graph_register_pattern")};
+  } catch { /* The standalone package has no host helper. */ }
+  return {};
+}
+
 export default function gentleGraphExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "graph_guide",
@@ -75,7 +83,7 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				limit?: number;
 				includeSnippets?: boolean;
 			};
-			return timedQuery(_toolCallId, "graph_guide", () => formatGuide(graphGuide(intent, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), limit, includeSnippets })));
+			return timedQuery(_toolCallId, "graph_guide", () => sessionQuery({kind:"guide",term:intent,root:resolveRoot(projectRoot,ctx?.cwd), limit, includeSnippets}));
 		},
 	});
 
@@ -90,7 +98,7 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				depth?: number;
 				projectRoot?: string;
 			};
-			return timedQuery(_toolCallId, "graph_inspect", () => formatInspect(graphInspect(symbol, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), depth })));
+			return timedQuery(_toolCallId, "graph_inspect", () => sessionQuery({kind:"inspect",term:symbol,root:resolveRoot(projectRoot,ctx?.cwd), depth}));
 		},
 	});
 
@@ -101,12 +109,13 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 		parameters: ImpactParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { target, projectRoot } = params as { target: string; projectRoot?: string };
-			return timedQuery(_toolCallId, "graph_impact", () => formatImpact(graphImpact(target, { projectRoot: resolveRoot(projectRoot, ctx?.cwd) })));
+			return timedQuery(_toolCallId, "graph_impact", () => sessionQuery({kind:"impact",term:target,root:resolveRoot(projectRoot,ctx?.cwd)}));
 		},
 	});
 
 	pi.registerTool({
 		name: "graph_register_pattern",
+		...registerPatternLoadout(),
 		label: "Gentle Graph register pattern",
 		description: "Record a confirmed reuse pattern.",
 		parameters: RegisterPatternParams,
@@ -129,7 +138,9 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 		return undefined;
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", async () => {
+		await closeQuerySessions();
+		clearGitSession();
 		clearMemoryCache();
 	});
 }

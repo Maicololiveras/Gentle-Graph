@@ -18,6 +18,8 @@ export interface SourceSite {
 
 export interface CodeSymbol {
   sites?: SourceSite[];
+  localCallees?: string[];
+  importCallees?: string[];
   qualifiedCalls?: string[];
   id: string;
   name: string;
@@ -99,6 +101,7 @@ export interface InspectResult {
 }
 
 export interface ImpactResult {
+  partial?: boolean;
   alternatives?: string[];
   dependencyTests?: string[];
   namedTests?: string[];
@@ -111,6 +114,9 @@ export interface ImpactResult {
 }
 
 export interface ModuleRecommendation {
+  coordinate?: string;
+  caller?: string;
+  associatedTest?: string;
   file: string;
   score: number;
   exports: string[];
