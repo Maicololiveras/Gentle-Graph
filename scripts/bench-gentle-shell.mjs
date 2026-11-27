@@ -24,6 +24,9 @@ if (!env.PI_CLI_JS) {
 if (env.PI_CLI_JS) env.PI_CLI_JS=fs.realpathSync(env.PI_CLI_JS);
 env.GENTLE_BENCH_MODULES=path.join(repo,"node_modules");
 if (!fs.existsSync(path.join(env.GENTLE_BENCH_MODULES,"typescript/bin/tsc"))) throw new Error("Install the dependencies of this Gentle Shell checkout before running a paid pair.");
+const tsPackage=path.join(env.GENTLE_BENCH_MODULES,"typescript/package.json");
+if (JSON.parse(fs.readFileSync(tsPackage,"utf8")).version!=="5.9.3")
+  throw new Error("This benchmark requires the host TypeScript 5.9.3 in both arms.");
 const cli = env.PI_CLI_JS ? process.execPath : "pi";
 const pre=spawnSync(cli,[...(env.PI_CLI_JS?[env.PI_CLI_JS]:[]),"--version"],{encoding:"utf8"});
 if (pre.status!==0) throw new Error("Pi unavailable. Install the repo prerequisites or set PI_CLI_JS to the absolute JS entry of your authenticated Pi installation.");

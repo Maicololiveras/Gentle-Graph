@@ -12,7 +12,7 @@ import { clearMemoryCache } from "../lib/gentle-graph/store.ts";
 
 import { formatPattern } from "../lib/gentle-graph/format.ts";
 
-const GRAPH_PROMPT_HINT = "Use graph tools when they replace exploration. Register patterns via codemode when available.";
+const GRAPH_PROMPT_HINT = "Use graph tools when helpful. Read guide ranges with offset/limit first. Register patterns via codemode when available.";
 
 function resolveRoot(explicitRoot?: string, ctxCwd?: string): string {
 	return explicitRoot || ctxCwd || process.env.GENTLE_WORKTREE_ROOT || process.cwd();

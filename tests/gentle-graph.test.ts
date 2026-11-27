@@ -362,6 +362,21 @@ it("ranks a relevant imported implementation used by the entry among the first t
   } finally { clearMemoryCache(root); fs.rmSync(root,{recursive:true,force:true}); }
 });
 
+it("promotes a called operation matching the intent ahead of a generic config helper", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "guide-called-"));
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, {recursive:true, force:true}); });
+  const files = {
+    "invoice-routing-router.ts": "import { loadInvoice } from './service.ts';\nimport { configHome } from './config-home.ts';\nexport function invoiceRouter() { return loadInvoice(configHome()); }",
+    "invoice-router-policy.ts": "export function invoiceRouterPolicy() {}",
+    "service.ts": "export function loadInvoice() {}",
+    "config-home.ts": "export function configHome() {}"
+  };
+  for (const [file, body] of Object.entries(files)) fs.writeFileSync(path.join(root,file),body);
+  const promoted = (intent:string) => graphGuide(intent,{projectRoot:root,limit:3}).recommendedModules.map(m=>m.file);
+  assert.ok(promoted("invoice routing router config loading").includes("service.ts"));
+  assert.ok(promoted("invoice routing router config home").includes("config-home.ts"));
+});
+
 it("reuses Git searches and invalidates them on repeated edits of a dirty file", async t => {
   const {gitSnapshot, gitGrepFiles, clearGitSession} = await import("../lib/gentle-graph/git-scope.ts");
   const root = largeRepo(t, 1);

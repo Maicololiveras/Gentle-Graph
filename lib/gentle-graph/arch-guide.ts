@@ -99,9 +99,24 @@ export function rankModules(index: GraphIndex, tokens: string[], limit: number):
     const calls = new Set(entry.symbols.flatMap(symbol => symbol.calls));
     // Reserve one visible slot for the strongest intent-matching dependency
     // whose exported operation is actually called by the leading module.
-    const implementation = ranked.find(module => module.file !== entry.path && imports.has(module.file)
-      && index.files[module.file].exports.some(name => calls.has(name)
-        && tokenizeIntent(name).some(token => tokens.includes(token))));
+    // Rank the called operation first. Whole-module relevance breaks ties.
+    const intent = new Set(tokens);
+    let implementation: ModuleRecommendation | undefined;
+    let bestMatches = 0;
+    for (const module of ranked) {
+      if (module.file === entry.path || !imports.has(module.file)) continue;
+      for (const name of index.files[module.file].exports) {
+        if (!calls.has(name)) continue;
+        const matches = tokenizeIntent(name).filter(word =>
+          intent.has(word) || intent.has(word + "ing") ||
+          (word.endsWith("e") && intent.has(word.slice(0, -1) + "ing"))
+        ).length;
+        if (matches > bestMatches) {
+          bestMatches = matches;
+          implementation = module;
+        }
+      }
+    }
     const slot = Math.min(2, scoredModules.length - 1);
     if (implementation && !scoredModules.slice(0, slot + 1).includes(implementation)) {
       scoredModules.splice(slot, 0, implementation);

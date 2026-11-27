@@ -44,18 +44,29 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     }
     const changed=new Set<string>();
     const batch={index:scope.index,paths:scope.paths,preview:true,deferSave:changed};
-    indexSpecificFiles(resolved,ranked.map(row=>row.file),batch);
+    const candidates=ranked.map(row=>row.file);
+    const singlePass=candidates.length<=3;
+    indexSpecificFiles(resolved,candidates,singlePass ? {...batch,followImports:1} : batch);
     if(sqlGuide){
       const files=Object.create(null);
       for(const {file} of ranked)if(scope.index.files[file])files[file]=scope.index.files[file];
       index={...scope.index,files};
     }
-    const seeds=rankModules(index,words,3);
-    indexSpecificFiles(resolved,seeds.map(m=>m.file),{...batch,followImports:1});
+    const seeds=singlePass ? ranked : rankModules(index,words,3);
+    if(!singlePass){
+      const pending=seeds.filter(({file})=>{
+        const node=index.files[file];
+        return node.preview || node.imports.some(spec=>{
+          const target=resolveImport(file,spec,scope.paths);
+          return target && !scope.index.files[target];
+        });
+      });
+      if(pending.length)indexSpecificFiles(resolved,pending.map(seed=>seed.file),{...batch,followImports:1});
+    }
     if(changed.size){
       try{saveGraphIndex(resolved,scope.index,changed);}catch{/* Read-only checkouts retain the in-memory guide. */}
     }
-    if(sqlGuide)for(const seed of seeds)for(const spec of index.files[seed.file].imports){
+    if(sqlGuide)for(const seed of seeds)for(const spec of index.files[seed.file]?.imports??[]){
       const neighbor=resolveImport(seed.file,spec,scope.paths);
       if(neighbor && scope.index.files[neighbor])index.files[neighbor]=scope.index.files[neighbor];
     }

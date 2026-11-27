@@ -57,9 +57,17 @@ pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!=
       }
       if (arm === "graph") args.push("-e", extension);
       const pi = process.env.PI_CLI_JS;
-      const start = performance.now();
-      const agent = spawnSync(pi ? process.execPath : "pi", [...(pi ? [pi] : []), ...args, "-p", prompt], { cwd, env:{...process.env,GENTLE_BENCH_ENGINE_TRACE:path.join(folder,"engine-times.jsonl")}, encoding:"utf8", maxBuffer:32*1024*1024 });
-      const elapsedMs = performance.now()-start;
+      const modules = process.env.GENTLE_BENCH_MODULES;
+      const link = path.join(cwd,"node_modules");
+      if (modules) fs.symlinkSync(fs.realpathSync(modules),link,process.platform==="win32"?"junction":"dir");
+      let agent, elapsedMs;
+      try {
+        const start = performance.now();
+        agent = spawnSync(pi ? process.execPath : "pi", [...(pi ? [pi] : []), ...args, "-p", prompt], { cwd, env:{...process.env,GENTLE_BENCH_ENGINE_TRACE:path.join(folder,"engine-times.jsonl")}, encoding:"utf8", maxBuffer:32*1024*1024 });
+        elapsedMs = performance.now()-start;
+      } finally {
+        if (modules) fs.unlinkSync(link);
+      }
       fs.writeFileSync(path.join(folder,"answer.txt"), agent.stdout ?? "");
       fs.writeFileSync(path.join(folder,"agent-stderr.txt"), agent.stderr ?? String(agent.error ?? ""));
       // Include added source files in the review patch, excluding the graph's generated cache.
