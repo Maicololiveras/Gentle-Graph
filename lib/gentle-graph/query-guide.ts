@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { detectArchitecture } from "./arch-detector.ts";
 import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
 import { graphInspect } from "./query-inspect.ts";
-import { getLookup,loadArchGuide,searchIndexedFiles } from "./store.ts";
+import { getLookup,loadArchGuide,searchIndexedFiles,saveGraphIndex } from "./store.ts";
 import { isTestFile,resolveImport } from "./languages/registry.ts";
 import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
 import type { GuideRecommendation, CodeSymbol } from "./types.ts";
@@ -42,14 +42,19 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       ranked.splice(pos < 0 ? ranked.length : pos, 0, { file, score });
       if (ranked.length > 15) ranked.pop();
     }
-    indexSpecificFiles(resolved, ranked.map(row => row.file), {paths:scope.paths,preview:true});
+    const changed=new Set<string>();
+    const batch={index:scope.index,paths:scope.paths,preview:true,deferSave:changed};
+    indexSpecificFiles(resolved,ranked.map(row=>row.file),batch);
     if(sqlGuide){
       const files=Object.create(null);
       for(const {file} of ranked)if(scope.index.files[file])files[file]=scope.index.files[file];
       index={...scope.index,files};
     }
     const seeds=rankModules(index,words,3);
-    indexSpecificFiles(resolved,seeds.map(m=>m.file),{paths:scope.paths,followImports:1,preview:true});
+    indexSpecificFiles(resolved,seeds.map(m=>m.file),{...batch,followImports:1});
+    if(changed.size){
+      try{saveGraphIndex(resolved,scope.index,changed);}catch{/* Read-only checkouts retain the in-memory guide. */}
+    }
     if(sqlGuide)for(const seed of seeds)for(const spec of index.files[seed.file].imports){
       const neighbor=resolveImport(seed.file,spec,scope.paths);
       if(neighbor && scope.index.files[neighbor])index.files[neighbor]=scope.index.files[neighbor];

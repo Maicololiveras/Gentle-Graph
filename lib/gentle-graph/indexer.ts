@@ -172,9 +172,9 @@ function likelyMinified(content: string): boolean {
   return false;
 }
 
-export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { index?:GraphIndex; followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
   const root = path.resolve(projectRoot);
-  const index = loadGraphIndex(root);
+  const index = options.index ?? loadGraphIndex(root);
   const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
   const stats: SyncStats = { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: 0 };
   const start = performance.now();
