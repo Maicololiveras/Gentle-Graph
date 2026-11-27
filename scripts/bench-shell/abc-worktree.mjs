@@ -26,7 +26,12 @@ function registeredWorktree(root, cwd) {
   const output = execFileSync("git", ["-C",root,"worktree","list","--porcelain","-z"], {
     encoding:"utf8", windowsHide:true
   });
-  const key = p => process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p);
+  function key(p) {
+    let absolute=path.resolve(p);
+    try {absolute=fs.realpathSync.native(absolute);}
+    catch(error){if(error.code!=="ENOENT")throw error;}
+    return process.platform==="win32"?absolute.toLowerCase():absolute;
+  }
   return output.split("\0").some(field => field.startsWith("worktree ") && key(field.slice(9)) === key(cwd));
 }
 
@@ -34,18 +39,20 @@ export async function cleanWorktrees(worktrees, remove, retained = new Set(), re
   const errors = [];
   for (const [root,cwd] of [...worktrees].reverse()) {
     if (retained.has(cwd)) continue;
+    let unregistered=false;
     for (const wait of [0,150,450,1000]) {
       if (wait) await delay(wait);
       try {
         const link = path.join(cwd,"node_modules");
         if (fs.lstatSync(link,{throwIfNoEntry:false})?.isSymbolicLink()) fs.unlinkSync(link);
-        if (registered(root,cwd)) {
+        if (!unregistered) {
           try {
             remove(root,cwd);
           } catch (error) {
             // Git can unregister the checkout before Windows releases its directory.
-            if (registered(root,cwd)) throw error;
+            if (registered(root,cwd) || fs.existsSync(path.join(cwd,".git"))) throw error;
           }
+          unregistered=true;
         }
         // cwd is a disposable checkout created and recorded by this invocation.
         fs.rmSync(path.toNamespacedPath(cwd),{recursive:true,force:true,maxRetries:3,retryDelay:200});
