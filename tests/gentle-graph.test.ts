@@ -334,6 +334,7 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     const combined=await grepImpactProjection(dir,"alpha");
     const {projectionArgs,projectionPattern}=await import("../lib/gentle-graph/git-projection.ts");
     assert.deepEqual(combined?.hits.sort(),["client.py","src/entry.ts"]);
+    assert.deepEqual((await grepImpactProjection(dir,"alpha",true))?.hits,[]);
     assert.deepEqual(combined?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
     execFileSync("git",["add","src","client.py"],{cwd:dir});
     fs.writeFileSync(path.join(dir,".gitattributes"),"*.ts filter=custom-text\n");
@@ -341,6 +342,7 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     assert.deepEqual((await grepImpactProjection(dir,"alpha"))?.hits,["client.py"]);
     const working=await grepImpactProjection(dir,"beta");
     assert.deepEqual(working?.hits,["src/entry.ts"]);
+    assert.deepEqual(await grepImpactProjection(dir,"beta",true),working);
     assert.deepEqual(working?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });

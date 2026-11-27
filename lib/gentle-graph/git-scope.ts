@@ -181,10 +181,11 @@ export function gitGrepFilesSync(root:string,literal:string|string[],maxFiles=80
 }
 
 // Read the worktree once for both the target and the reverse-import projection.
-export async function grepImpactProjection(root:string, term:string){
+export async function grepImpactProjection(root:string, term:string, trackedOnly=false){
   if(!/^[a-z][a-zA-Z0-9_]*$/.test(term))return null;
   const args=[...projectionArgs.slice(0,projectionArgs.indexOf("--")+1),...grepArgs.slice(grepArgs.indexOf("--")+1)];
-  const rows=await requireGitPaths(root,args,projectionPattern+term+"\n");
+  const search=trackedOnly ? args.filter(arg=>arg!=="--untracked") : args;
+  const rows=await requireGitPaths(root,search,projectionPattern+term+"\n");
   if(!rows)return null;
   const hits=new Set<string>();
   const projection:string[]=[];
@@ -302,12 +303,12 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // Search the bytes the parser sees, including smudged files. This
       // eliminates the separate check-attr pass over every tracked path.
       const combined=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!)
-        ? grepImpactProjection(root,inspectTerm!).catch(()=>null) : undefined;
+        ? grepImpactProjection(root,inspectTerm!,true).catch(()=>null) : undefined;
       // status reports staged, unstaged and untracked changes together. With
       // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
         gitSnapshot(root),
-        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root,inspectTerm!,Infinity,null).catch(()=>null) : null,
+        combined ? combined.then(result=>result?.hits) : simple ? requireGitPaths(root,grepArgs.filter(arg=>arg!=="--untracked"),inspectTerm+"\n").then(rows=>rows?.filter(isIndexableFile)).catch(()=>null) : null,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
