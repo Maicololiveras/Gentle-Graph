@@ -48,7 +48,6 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
     initial=identifyRoots();
     scoped=moduleRoots(initial);
   }
-  const files = scope.knownFiles;
   const live = new Map<string, boolean>();
   function exists(file: string) {
     if (!live.has(file)) {
@@ -157,7 +156,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
         const dir=path.posix.dirname(ref.file);
         if(!expandedScopes.has(dir)){
           expandedScopes.add(dir);
-          for(const f of files)if(f.endsWith(".go") && path.posix.dirname(f)===dir && goPackage(f)===goPackage(ref.file))localFiles.add(f);
+          for(const f of scope.knownFiles)if(f.endsWith(".go") && path.posix.dirname(f)===dir && goPackage(f)===goPackage(ref.file))localFiles.add(f);
         }
       } else if(scopeKind==="partial-type"){
         const owner=ref.name.split(".")[0];
@@ -184,7 +183,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   const dependencyTests = affectedFiles.filter(testSource);
   const stem = (file: string) => path.posix.parse(file).name.toLowerCase();
   const stems = new Set([...origins, ...affectedFiles.filter(f => !isTestFile(f))].map(stem));
-  const namedTests = files.filter(file => {
+  const namedTests = scope.tests.filter(file => {
     if (!testSource(file)) return false;
     const subject = stem(file).replace(/^test_/, "").replace(/(?:[._-]?(?:tests?|spec))$/, "");
     return stems.has(subject) && exists(file);

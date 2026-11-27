@@ -3,7 +3,7 @@ import { gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-sc
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
+import { adapterFor, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
 import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
 import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
 
@@ -106,11 +106,11 @@ const isContract = (file: string) => /(?:^|\/)contracts\/.*\.(?:md|txt|ya?ml|jso
 export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
   const knownFiles = tracked?.files ?? [];
   if (!tracked) walkSourceFiles(root, root, knownFiles);
-  const files: string[] = [], manifests: string[] = [], contracts: string[] = [];
+  const files: string[] = [], manifests: string[] = [], contracts: string[] = [], tests: string[] = [];
   const folders = new Set<string>([""]);
   // Git emits adjacent files from the same directory. Reuse its exclusion decision.
   let folder = "", skipFolder = false, contractFolder = false;
-  let lastExtension = "", knownSourceExtension = false, isCSharp = false;
+  let lastExtension = "", adapter: ReturnType<typeof adapterFor>, isCSharp = false;
   for (const file of knownFiles) {
     const slash = file.lastIndexOf("/");
     if (slash + 1 !== folder.length || !file.startsWith(folder)) {
@@ -126,21 +126,22 @@ export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
     // depend on the whole filename and must still go through the registry.
     if (extension !== lastExtension) {
       lastExtension = extension;
-      knownSourceExtension = !!extension && isIndexableFile("source" + extension);
+      adapter = extension ? adapterFor("source" + extension) : undefined;
       isCSharp = extension.toLowerCase() === ".cs";
     }
-    if (knownSourceExtension) {
+    if (adapter) {
       if (file.indexOf(".", slash + 1) !== dot && /\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(file)) continue;
       if (isCSharp && !isIndexableFile(file)) continue;
       files.push(file);
+      if (adapter.isTestFile(file)) tests.push(file);
       if (file.endsWith("build.gradle.kts") || file.endsWith("Package.swift")) manifests.push(file);
     } else if (isManifest(file)) manifests.push(file);
     if (contractFolder && isContract(file)) contracts.push(file);
   }
-  return { knownFiles: files, manifests, contracts, folders, git: tracked !== null, untracked: tracked?.untracked };
+  return { knownFiles: files, tests, manifests, contracts, folders, git: tracked !== null, untracked: tracked?.untracked };
 }
 
-type Scope = { manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
+type Scope = { tests: string[]; manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
 type CachedScope = { scope: Scope; time: number; discoveredAt: number; folders: Set<string>; stalePatterns: number };
 const scopes = new WeakMap<GraphIndex, CachedScope>();
 
@@ -247,9 +248,9 @@ export function syncGraphIndex(projectRoot: string, options: boolean | { fullSyn
   const discoveredAt = Date.now();
   const provided = typeof options === "object" ? options.inventory : undefined;
   const inventory = provided === undefined ? (force ? gitInventory(root) : gitWorkspaceInventory(root)) : provided;
-  const { knownFiles, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root, inventory);
+  const { knownFiles, tests, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root, inventory);
   const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? inventory?.dirty ?? gitDirtyFilesSync(root, untracked)) : null;
-  const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
+  const scope: Scope = { knownFiles, tests, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
   const guide = loadArchGuide(root);
   const patterns = new Set(guide.patterns.map(p => p.entry.split("#")[0]));
   const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];

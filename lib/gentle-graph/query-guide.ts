@@ -80,11 +80,11 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const missingTests = new Set(top.map(module => path.posix.parse(module.file).name));
   const testByStem = new Map<string, string>();
   // Only the three displayed modules need a convention-based test candidate.
-  for (const file of scope.knownFiles) {
+  for (const file of scope.tests) {
     if (!missingTests.size) break;
     const start = file.lastIndexOf("/") + 1;
     for (const stem of missingTests) {
-      if (!file.startsWith(stem, start) || !isTestFile(file)) continue;
+      if (!file.startsWith(stem, start)) continue;
       if (path.posix.parse(file).name.replace(/(?:[._-](?:test|spec))$/i, "") !== stem) continue;
       testByStem.set(stem, file);
       missingTests.delete(stem);
