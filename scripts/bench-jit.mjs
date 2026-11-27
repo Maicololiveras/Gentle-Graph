@@ -38,14 +38,16 @@ try {
     fs.writeFileSync(path.join(dir, `mod-${i}.ts`), "export function unrelated() {}\n");
   }
   fs.writeFileSync(path.join(root, "billing.ts"), "export function billing() {}\n");
-  const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
+  const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe", windowsHide:true });
   git("init", "-q");
+  git("config", "gc.auto", "0");
+  git("config", "core.autocrlf", "false");
   git("add", ".");
   git("-c", "user.name=Benchmark", "-c", "user.email=bench@example.invalid", "commit", "-qm", "fixture");
   const runs = [];
   for (let i = 0; i < repetitions; i++) {
-    fs.rmSync(path.join(root, ".gentle-graph"), { recursive: true, force: true });
-    runs.push(JSON.parse(execFileSync(process.execPath, [fileURLToPath(import.meta.url), "--sample", root], { encoding: "utf8" })));
+    fs.rmSync(path.join(root, ".gentle-graph"), { recursive: true, force: true, maxRetries:8, retryDelay:200 });
+    runs.push(JSON.parse(execFileSync(process.execPath, [fileURLToPath(import.meta.url), "--sample", root], { encoding: "utf8", windowsHide:true })));
   }
   const limits = { coldGuideMs: 150, architectureMs: 15, pythonMsPerFile: 2 };
   const summary = {};
@@ -57,5 +59,5 @@ try {
   console.log(JSON.stringify({ count, node: process.version, platform: process.platform, runs, summary }, null, 2));
   if (process.argv.includes("--check") && Object.values(summary).some(metric => !metric.pass)) process.exitCode = 1;
 } finally {
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true, maxRetries:8, retryDelay:200 });
 }
