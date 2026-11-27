@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import {execFileSync} from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import {sessionQuery,closeQuerySessions} from "../lib/gentle-graph/query-session.ts";
 
 const repository=path.resolve(process.argv[2] ?? ".");
+// Keep the object database and its disposable checkouts on the same volume,
+// just as they are in a normal clone. Windows runners can put TEMP on C:
+// while the repository (and Git objects read during status) lives on D:.
+const fixtureParent=path.dirname(repository);
+console.log(JSON.stringify({repository,fixtureParent,node:process.version,platform:process.platform}));
 const commit="c9b59eab57a56224c76b99e1caa9bb94cb113dc8";
 const intent="subagent tool grants configuration global project discovery agent unknown warnings per-key API";
 const failures=[];
 for(const [kind,limit] of [["guide",350],["inspect",800],["impact",1000]]) {
-  const temp=fs.mkdtempSync(path.join(os.tmpdir(),"gentle-query-"));
+  const temp=fs.mkdtempSync(path.join(fixtureParent,"gentle-query-"));
   const root=path.join(temp,"checkout");
   const git=(...args)=>execFileSync("git",args,{cwd:repository,windowsHide:true,stdio:"pipe"});
   let added=false;

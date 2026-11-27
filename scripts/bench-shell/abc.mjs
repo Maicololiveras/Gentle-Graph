@@ -11,7 +11,7 @@ import {reportABC} from "./abc-report.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const graphRepo = path.resolve(here, "../..");
-const graphSHA = "efeed94d8cf59ea65c7f26251b01551ed2fd29df";
+const graphSHA = "0c286bfe967bc43a141284054834db5e5a0f1225";
 const shellSHA = "c9b59eab57a56224c76b99e1caa9bb94cb113dc8";
 const model = "openai-codex/gpt-6.2-sol";
 const orders = ["ABC","BCA","CAB"];
@@ -56,11 +56,12 @@ export function resolvePiRuntime(packagePath){
 
 export async function runABC(argv){
   if(argv.includes("--help")){
-    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only]\nRequires Windows, Node 24, installed Shell node_modules, Pi 1.6.0 (set GENTLE_ABC_PI_PACKAGE to an isolated pi-coding-agent package directory if needed), interactive Codex device authorization and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
+    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only | --cleanup-check]\nRequires Windows, Node 24, installed Shell node_modules, Pi 1.6.0 (set GENTLE_ABC_PI_PACKAGE to an isolated pi-coding-agent package directory if needed), interactive Codex device authorization and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
     return;
   }
-  const only=argv.includes("--preflight-only");
-  const positional=argv.filter(a=>a!=="--preflight-only");
+  const cleanupCheck=argv.includes("--cleanup-check");
+  const only=cleanupCheck || argv.includes("--preflight-only");
+  const positional=argv.filter(a=>a!=="--preflight-only" && a!=="--cleanup-check");
   if(positional.length!==1 || process.platform!=="win32" || process.versions.node.split(".")[0]!=="24")
     throw Error("ABC requires Windows, Node 24 and the path to the Gentle Shell checkout; use --abc --help.");
   const repo=fs.realpathSync(positional[0]);
@@ -89,7 +90,7 @@ export async function runABC(argv){
   const cgVersion=ps("& $env:GENTLE_ABC_VERSION_BIN --version; exit $LASTEXITCODE",{...process.env,GENTLE_ABC_VERSION_BIN:binary});
   const documents=ps("[Environment]::GetFolderPath('MyDocuments')");
   if(!documents)throw Error("Windows Documents folder unavailable.");
-  const parent=path.join(documents,"Gentle-Graph","benchmarks","abc-efeed94-c9b59ea");
+  const parent=path.join(documents,"Gentle-Graph","benchmarks",`abc-${graphSHA.slice(0,7)}-${shellSHA.slice(0,7)}`);
   fs.mkdirSync(parent,{recursive:true});
   const out=fs.mkdtempSync(path.join(parent,new Date().toISOString().replace(/[:.]/g,"-")+"-"));
   console.log("ABC evidence:",out);
@@ -111,7 +112,7 @@ export async function runABC(argv){
     job=await openWindowsJob();
     const engine=path.join(temp,"engine");
     checkout(graphRepo,engine,graphSHA);
-    const accessForPi=await deviceSession(cli);
+    const accessForPi=cleanupCheck ? ()=>({access:"local-cleanup-probe",expires:Date.now()+3600000}) : await deviceSession(cli);
     const task=fs.readFileSync(path.join(engine,"scripts/bench-shell/task.txt"),"utf8");
     fs.writeFileSync(path.join(out,"task.txt"),task);
     for(const [r,order] of orders.entries())for(const arm of order){
@@ -159,6 +160,8 @@ export async function runABC(argv){
       environments.push({r:r+1,arm,cwd,folder,env,args,sessions,cgDir,initialized:fs.existsSync(cgDir),setupMs:performance.now()-setup});
     }
     manifest.preflight="passed";
+    manifest.probeOnlyCredentials=cleanupCheck;
+    manifest.preflightCount=environments.length;
     save(path.join(out,"summary.json"),manifest);
     if(only)return;
     for(const e of environments){

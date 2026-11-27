@@ -1,0 +1,61 @@
+name: Windows ABC cleanup
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "scripts/bench-shell/abc*"
+      - ".github/workflows/abc-cleanup.yml"
+permissions:
+  contents: read
+jobs:
+  codegraph-cleanup:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/checkout@v4
+        with:
+          repository: Gentleman-Programming/gentle-shell
+          ref: c9b59eab57a56224c76b99e1caa9bb94cb113dc8
+          path: benchmark-host
+      - name: Install pinned tools on the disposable runner
+        working-directory: benchmark-host
+        run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund typescript@5.9.3 @types/node@24.13.3 typebox@1.1.38 @earendil-works/pi-coding-agent@1.6.0 @earendil-works/pi-ai@1.6.0 @earendil-works/pi-tui@1.6.0
+      - name: Exercise all nine RPC sessions and verify cleanup without model calls
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:RUNNER_TEMP codegraph-tools
+          npm install --prefix $prefix --no-audit --no-fund @colbymchenry/codegraph@1.6.4
+          if ($LASTEXITCODE) { throw 'CodeGraph installation failed' }
+          $env:PATH = "$(Join-Path $prefix 'node_modules/.bin');$env:PATH"
+          $package = Join-Path $prefix 'node_modules/@colbymchenry/codegraph'
+          $metadata = Get-Content (Join-Path $package 'package.json') -Raw | ConvertFrom-Json
+          $cli = (Resolve-Path (Join-Path $package $metadata.bin.codegraph)).Path
+          Write-Host "Testing $($metadata.name) $($metadata.version) from $cli"
+
+          $node = (Get-Command node).Source
+          $env:GENTLE_ABC_MCP_CONFIG = Join-Path $env:RUNNER_TEMP codegraph-config.json
+          @{mcpServers=@{codegraph=@{command=$node;args=@($cli,'serve','--mcp')}}} | ConvertTo-Json -Depth 5 | Set-Content $env:GENTLE_ABC_MCP_CONFIG
+          $env:CODEGRAPH_PREPARE_ARGV = ConvertTo-Json -Compress -InputObject @($node,$cli,'init','--yes','--local-only')
+          function Inventory {
+            @(git worktree list --porcelain; git -C benchmark-host worktree list --porcelain; Get-ChildItem -Directory ([IO.Path]::GetTempPath()) -Filter 'gentle-abc-*' | ForEach-Object FullName) -join "`n"
+          }
+          $before = Inventory
+          node scripts/bench-gentle-shell.mjs --abc benchmark-host --cleanup-check
+          if ($LASTEXITCODE) {
+            $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Gentle-Graph/benchmarks/abc-0c286bf-c9b59ea'
+            Get-ChildItem $dir -Recurse -Include prepare.log,preflight.log,cleanup.json,clean-typecheck.txt | ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName -Tail 15 }
+            throw 'Cleanup check failed'
+          }
+          if ((Inventory) -cne $before) { throw 'Worktree or temp directory inventory changed' }
+          $output = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Gentle-Graph/benchmarks/abc-0c286bf-c9b59ea'
+          $run = Get-ChildItem $output -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $summary = Get-Content (Join-Path $run.FullName summary.json) -Raw | ConvertFrom-Json
+          if ($summary.preflightCount -ne 9 -or !$summary.probeOnlyCredentials -or $summary.rows.Count -ne 0) { throw 'Unexpected run evidence' }
+          Write-Host "Verified 9 RPC loadouts, 0 model sessions, identical worktree and directory inventories. CodeGraph $($summary.codegraph)."
