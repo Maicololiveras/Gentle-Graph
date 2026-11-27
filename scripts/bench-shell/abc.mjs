@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {execFileSync, spawn, spawnSync} from "node:child_process";
+import {execFileSync, spawnSync} from "node:child_process";
+import {deviceSession, runPi} from "./abc-auth.mjs";
 import {sessionMetrics} from "./session-metrics.mjs";
 import {reportABC} from "./abc-report.mjs";
 
@@ -28,17 +29,6 @@ function checkTools(state,arm) {
     (arm!=="C" || ["graph_inspect","graph_impact","graph_register_pattern"].every(n=>state.registered.includes(n))) &&
     state.registered.some(n=>/^gentle_|^gentle-/.test(n));
 }
-async function probe(cli,args,cwd,env,log) {
-  const fd=fs.openSync(log,"w");
-  try {
-    await new Promise((resolve,reject)=>{
-      const p=spawn(process.execPath,[cli,...args,"--mode","rpc","--no-session"],{cwd,env,windowsHide:true,stdio:["pipe",fd,fd]});
-      const timeout=setTimeout(()=>{p.kill();reject(Error("Pi preflight timeout: "+log));},90000);
-      p.once("error",e=>{clearTimeout(timeout);reject(e);});
-      p.once("close",code=>{clearTimeout(timeout);code===0?resolve():reject(Error("Pi preflight failed: "+log));});
-    });
-  } finally {fs.closeSync(fd);}
-}
 function verify(cwd,env,args,file){
   const p=spawnSync(process.execPath,args,{cwd,env,windowsHide:true,encoding:"utf8",maxBuffer:64*1024*1024});
   fs.writeFileSync(file,[p.stdout,p.stderr,p.error].filter(Boolean).join("\n"));
@@ -47,7 +37,7 @@ function verify(cwd,env,args,file){
 
 export async function runABC(argv){
   if(argv.includes("--help")){
-    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only]\nRequires Windows, Node 24, installed Shell node_modules, Pi auth and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
+    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only]\nRequires Windows, Node 24, installed Shell node_modules, interactive Codex device authorization and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
     return;
   }
   const only=argv.includes("--preflight-only");
@@ -62,8 +52,8 @@ export async function runABC(argv){
   const pkg=path.join(modules,"@earendil-works/pi-coding-agent");
   const cli=path.resolve(pkg,read(path.join(pkg,"package.json")).bin.pi);
   const pi=run(process.execPath,[cli,"--version"]);
+  if(read(path.join(pkg,"package.json")).version!=="1.6.0")throw Error("ABC authentication requires pinned Pi 1.6.0.");
   const originalHome=process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(),".pi","agent");
-  const auth=path.join(originalHome,"auth.json");
   const configFile=process.env.GENTLE_ABC_MCP_CONFIG || path.join(originalHome,"mcp.json");
   if(!fs.existsSync(configFile))throw Error("Missing CodeGraph MCP configuration: "+configFile+
     ". Set GENTLE_ABC_MCP_CONFIG to a JSON file containing the working local mcpServers.codegraph entry.");
@@ -101,6 +91,7 @@ export async function runABC(argv){
   try{
     const engine=path.join(temp,"engine");
     checkout(graphRepo,engine,graphSHA);
+    const accessForPi=await deviceSession(cli);
     const task=fs.readFileSync(path.join(engine,"scripts/bench-shell/task.txt"),"utf8");
     fs.writeFileSync(path.join(out,"task.txt"),task);
     for(const [r,order] of orders.entries())for(const arm of order){
@@ -110,8 +101,6 @@ export async function runABC(argv){
       fs.mkdirSync(sessions,{recursive:true});
       fs.mkdirSync(agent,{recursive:true});
       checkout(repo,cwd,shellSHA);
-      // Share only the actual credential file; settings, skills, MCP and logs are private per run.
-      if(fs.existsSync(auth)) fs.linkSync(auth,path.join(agent,"auth.json"));
       save(path.join(agent,"settings.json"),{packages:[cwd]});
       const env={...process.env,HOME:home,USERPROFILE:home,APPDATA:path.join(home,"Roaming"),LOCALAPPDATA:path.join(home,"Local"),
         PI_CODING_AGENT_DIR:agent,GENTLE_PI_AGENT_HOME:agent,GENTLE_PI_CONFIG_HOME:path.join(home,".pi","gentle-ai"),
@@ -136,7 +125,9 @@ export async function runABC(argv){
         const [cmd,...params]=JSON.parse(env.CODEGRAPH_PREPARE_ARGV);
         run(cmd,params.map(s=>s.replaceAll("{worktree}",cwd)),{cwd,env});
       }
-      await probe(cli,args,cwd,{...env,GENTLE_ABC_PROBE:"1"},path.join(folder,"preflight.log"));
+      const status=await runPi(cli,[...args,"--mode","rpc","--no-session"],cwd,{...env,GENTLE_ABC_PROBE:"1"},
+        path.join(folder,"preflight.log"),await accessForPi(),true);
+      if(status!==0)throw Error("Pi preflight failed at "+folder);
       const state=read(path.join(folder,"preflight-tools.json"));
       if(!state.available || !checkTools(state,arm))throw Error("Invalid model, reasoning, host or graph loadout at "+folder);
       save(path.join(folder,"preflight.json"),{sha:shellSHA,typescript:ts,cleanTypecheck:clean,arm,round:r+1,
@@ -149,8 +140,9 @@ export async function runABC(argv){
     for(const e of environments){
       const {cwd,env,folder,arm}=e;
       console.log("Round",e.r,names[arm]);
+      const access=await accessForPi();
       const start=Date.now(),begin=performance.now();
-      const exit=verify(cwd,{...env,GENTLE_ABC_PROBE:"0"},[cli,...e.args,"-p",task],path.join(folder,"agent-output.txt"));
+      const exit=await runPi(cli,[...e.args,"-p",task],cwd,{...env,GENTLE_ABC_PROBE:"0"},path.join(folder,"agent-output.txt"),access);
       const elapsedMs=performance.now()-begin;
       const metric=sessionMetrics(e.sessions);
       const eventsFile=path.join(folder,"calls.jsonl");
@@ -187,10 +179,6 @@ export async function runABC(argv){
     reportABC(manifest);
     throw error;
   }finally{
-    // Unlink credential handles even if removing a Windows worktree fails.
-    for(const name of fs.readdirSync(temp).filter(name=>name.endsWith("-home"))){
-      fs.rmSync(path.join(temp,name,".pi","agent","auth.json"),{force:true});
-    }
     for(const [root,cwd] of worktrees.reverse()){
       const link=path.join(cwd,"node_modules");
       if(fs.lstatSync(link,{throwIfNoEntry:false})?.isSymbolicLink())fs.rmdirSync(link);
