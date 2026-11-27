@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import {rootLayout,verifiedCleanIndex,type GitLayout} from "./clean-index.ts";
+import {rootLayout,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
 import { promisify } from "node:util";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
 import { isIndexableFile, sourceExtensions } from "./languages/registry.ts";
@@ -84,8 +84,26 @@ export function gitInventory(root:string):Inventory|null {
 }
 
 export function gitWorkspaceInventory(root: string): Inventory | null {
-  const tracked = readTrackedIndexPaths(root);
+  const layout = rootLayout(root);
+  const before = layout && process.platform === "linux" ? fs.statSync(path.join(layout.dir,"index"),{bigint:true,throwIfNoEntry:false}) : undefined;
+  const offsets: number[] = [];
+  let bytes: Buffer | undefined;
+  const tracked = readTrackedIndexPaths(root, layout, process.platform === "linux" ? (_file, index, offset) => {
+    bytes = index;
+    offsets.push(offset);
+  } : undefined);
   if (!tracked) return gitInventory(root);
+  const folders = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
+  if (folders && layout) {
+    const remaining = gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",".", ...[...folders].map(f=>":(exclude,literal)"+f)]);
+
+    const untracked = gitPathsSync(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]);
+    const staged = gitPathsSync(root, ["diff", "--cached", "--name-only", "--no-renames", "-z", "--", "."]);
+    const after = fs.statSync(path.join(layout.dir,"index"),{bigint:true,throwIfNoEntry:false});
+    if (untracked && staged && remaining && before.ctimeNs === after?.ctimeNs && before.ino === after.ino) {
+      return {files: untracked.length ? tracked.concat(untracked) : tracked, untracked, dirty: [...new Set([...staged,...remaining,...untracked])].filter(isIndexableFile)};
+    }
+  }
   const rows = gitPathsSync(root, ["status","--porcelain=v1","-z","--no-renames","--untracked-files=all","--","."]);
   if (rows === null) return null;
   const dirty: string[] = [], untracked: string[] = [];
