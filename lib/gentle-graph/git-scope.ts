@@ -50,7 +50,22 @@ export function gitPathsSync(root:string,args:string[],_grep=false,input?:string
 // Consistent diagnostic for gitFailure on localized hosts.
 function gitEnv(){return {...process.env,LC_ALL:"C"};}
 
-export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
+type GitResult={status:"ok"|"not_git"|"git_error";paths:string[];error?:GitScopeError};
+export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<GitResult>{
+  try{
+    const paths=await executeGitPaths(root,args,input,timeout);
+    return paths===null?{status:"not_git",paths:[]}:{status:"ok",paths};
+  }catch(error){
+    if(!(error instanceof GitScopeError))throw error;
+    return {status:"git_error",paths:[],error};
+  }
+}
+export async function requireGitPaths(root:string,args:string[],input?:string,timeout=4000){
+  const result=await gitPaths(root,args,input,timeout);
+  if(result.status==="git_error")throw result.error;
+  return result.status==="ok"?result.paths:null;
+}
+async function executeGitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
   const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
   try {
     const result=run("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
@@ -198,7 +213,7 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       const [state, hits, projection] = await Promise.all([
         gitSnapshot(root),
         simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
-        impact && fs.existsSync(path.join(root,"tsconfig.json")) ? gitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
+        impact && fs.existsSync(path.join(root,"tsconfig.json")) ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
       if (simple && state && !state.dirty.length && hits) {
@@ -217,12 +232,12 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
     // establishes clean tracked bytes. Git supplies staged and untracked changes.
     const [verified,untracked,staged]=await Promise.all([
       verifiedCleanIndex(root,layout),
-      gitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
-      gitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
+      requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+      requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
     ]);
     if(verified && untracked && staged){
       const {files,suspects}=verified;
-      const changedOnDisk=suspects.length ? await gitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
+      const changedOnDisk=suspects.length ? await requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
       if(changedOnDisk===null)return [null,null];
       const markers=controlFiles(root,layout);
       const head=fs.readFileSync(markers[0],"utf8").trimEnd();
@@ -252,8 +267,8 @@ export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
   // dirty file, branch/index change or manual guide edit invalidates immediately.
   if(old && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
   const [rows,layout]=await Promise.all([
-    gitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
-    layouts.get(root)??gitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))
+    requireGitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
+    layouts.get(root)??requireGitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))
   ]);
   if(!rows || !layout)return null;
   const markers=controlFiles(root,layout);
@@ -287,7 +302,7 @@ export async function gitListIndexableFiles(root:string,state?:GitSnapshot|null)
 }
 export async function gitSessionInventory(root:string,snapshot:GitSnapshot|null):Promise<Inventory|null>{
   if(snapshot?.inventory)return snapshot.inventory;
-  const files=await gitPaths(root,["ls-files","--deduplicate","-z","--cached","--others","--exclude-standard","--","."]);
+  const files=await requireGitPaths(root,["ls-files","--deduplicate","-z","--cached","--others","--exclude-standard","--","."]);
   if(!files)return null;
   const inventory={files,untracked:[]};
   if(snapshot)snapshot.inventory=inventory;
@@ -302,7 +317,7 @@ export async function gitGrepFiles(root:string,literal:string|string[],maxFiles=
   const key=JSON.stringify(terms);
   let files=snapshot?.greps.get(key);
   if(!files){
-    const rows=await gitPaths(root,grepArgs,terms.join("\n")+"\n",timeout);
+    const rows=await requireGitPaths(root,grepArgs,terms.join("\n")+"\n",timeout);
     if(rows===null)return null;
     files=rows.filter(isIndexableFile);
     if(snapshot){

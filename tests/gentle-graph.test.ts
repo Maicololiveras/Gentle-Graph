@@ -421,9 +421,10 @@ it("reports a broken Git index and recovers on the next session query", {timeout
   const indexPath = path.join(root, ".git", "index");
   const original = fs.readFileSync(indexPath);
   fs.writeFileSync(indexPath, "broken Git index");
-  assert.throws(() => graphGuide("billing", {projectRoot: root}), /Git ls-files failed/);
+  assert.equal(syncGraphIndex(root).degraded,true);
+  assert.deepEqual(graphGuide("billing",{projectRoot:root}).recommendedModules,[]);
   try {
-    await assert.rejects(sessionQuery({root,kind:"guide",term:"billing"}), /Git .* failed/);
+    assert.doesNotMatch(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
     assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
     fs.writeFileSync(indexPath, original);
     assert.match(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
@@ -510,3 +511,4 @@ it("keeps Go package-private transitive callers inside their package", t=>{
   assert.ok(!result.transitiveCallers.some(s=>s.name==="Detached"));
   assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });
+import "./sqlite-store.test.ts";

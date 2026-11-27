@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { detectArchitecture } from "./arch-detector.ts";
 import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
 import { graphInspect } from "./query-inspect.ts";
-import { getLookup,loadArchGuide } from "./store.ts";
+import { getLookup,loadArchGuide,searchIndexedFiles } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
 import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
 import type { GuideRecommendation, CodeSymbol } from "./types.ts";
@@ -27,10 +27,11 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     const patterns = rules.patterns;
     const referenced = new Set(patterns.flatMap(p => [p.entry.split("#")[0], ...p.files]));
     const dirty = new Set(scope.dirty);
+    const matches=new Set(searchIndexedFiles(resolved,intent));
     const ranked: { file: string; score: number }[] = [];
     for (const file of scope.knownFiles) {
       const name = file.toLowerCase();
-      let score = Number(referenced.size > 0 && referenced.has(file)) + Number(dirty.size > 0 && dirty.has(file));
+      let score = Number(matches.has(file))*4 + Number(referenced.size > 0 && referenced.has(file)) + Number(dirty.size > 0 && dirty.has(file));
       for (const token of tokens) if (name.includes(token)) score += 4;
       if (!score || (ranked.length === 15 && score <= ranked[14].score)) continue;
       const pos = ranked.findIndex(item => item.score < score);
