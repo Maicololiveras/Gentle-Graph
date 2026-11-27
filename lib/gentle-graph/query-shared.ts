@@ -73,17 +73,35 @@ export function runSync<T>(root:string, steps:QuerySteps<T>,deadline=Infinity):T
   return step.value;
 }
 const projections=new WeakMap<GitSnapshot,string[]>();
-export async function runAsync<T>(root:string,steps:QuerySteps<T>,state:GitSnapshot|null,deadline=Infinity):Promise<T>{
-  let step=steps.next();
-  while(!step.done){
-    const remaining=deadline-performance.now();
-    if(step.value===moduleProjection && remaining>0){
-      const rows=(state && projections.get(state))??await gitPaths(root,projectionArgs,projectionPattern,Math.min(4000,Math.ceil(remaining)));
-      if(state && rows)projections.set(state,rows);
-      step=steps.next(rows);
-      continue;
+export async function runAsync<T>(
+  root: string, steps: QuerySteps<T>, state: GitSnapshot | null,
+  deadline = Infinity, prefetchModuleImports = false
+): Promise<T> {
+  async function readProjection() {
+    const cached = state && projections.get(state);
+    if (cached) return cached;
+    const remaining = Math.max(1, Math.min(4000, Math.ceil(deadline - performance.now())));
+    const rows = await gitPaths(root, projectionArgs, projectionPattern, remaining);
+    if (state && rows) projections.set(state, rows);
+    return rows;
+  }
+
+  // Root declaration lookup and discovery of module specifiers are independent.
+  // Observe failures even when the resolved root uses another language adapter.
+  const prefetched = prefetchModuleImports ? Promise.allSettled([readProjection()]) : undefined;
+  let step = steps.next();
+  while (!step.done) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) {
+      step = steps.next(null);
+    } else if (step.value === moduleProjection) {
+      const result = prefetched && (await prefetched)[0];
+      if (result?.status === "rejected") throw result.reason;
+      step = steps.next(result ? result.value : await readProjection());
+    } else {
+      const timeout = Math.max(1, Math.min(4000, Math.ceil(remaining)));
+      step = steps.next(await gitGrepFiles(root, step.value as string[], Infinity, state, timeout));
     }
-    step=steps.next(remaining<=0?null:await gitGrepFiles(root,step.value as string[],Infinity,state,Math.max(1,Math.min(4000,Math.ceil(remaining)))));
   }
   return step.value;
 }

@@ -33,5 +33,7 @@ jobs:
         continue-on-error: true
         run: node scripts/bench-jit.mjs 30000 --check
       - run: node scripts/bench-queries.mjs benchmark-host
+        env:
+          GENTLE_GRAPH_PROFILE: "1"
       - if: always() && steps.jit.outcome == 'failure'
         run: node -e "process.exit(1)"

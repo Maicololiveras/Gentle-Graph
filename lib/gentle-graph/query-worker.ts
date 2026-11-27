@@ -33,8 +33,9 @@ async function handle(q:Query,prepared?:Prepared){
   } else if(q.kind==="inspect"){
     text=formatInspect(await runAsync(q.root,inspectSteps(q.term,q,q.root,scope),state));
   } else {
+    const prefetch = scope.mode === "jit" && existsSync(path.join(q.root,"tsconfig.json"));
     const result=await runAsync(q.root,impactSteps(q.term,{},q.root,scope,deadline,partial=>
-      parentPort.postMessage({checkpoint:formatImpact(partial)})),state,deadline);
+      parentPort.postMessage({checkpoint:formatImpact(partial)})),state,deadline,prefetch);
     text=formatImpact(result);
     if(result.partial)return text;
   }

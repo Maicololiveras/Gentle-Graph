@@ -50,12 +50,15 @@ export function gitPathsSync(root:string,args:string[],_grep=false,input?:string
 function gitEnv(){return {...process.env,LC_ALL:"C"};}
 
 export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
+  const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
   try {
     const result=run("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
     result.child.stdin?.on("error",()=>{}).end(input);
     return (await result).stdout.split("\0").filter(Boolean);
   } catch(error){
     return gitFailure(root,args,error)===null?null:[];
+  } finally {
+    if(started!==undefined)console.error(JSON.stringify({graphProfile:"git",command:args[0],ms:performance.now()-started}));
   }
 }
 
@@ -120,6 +123,7 @@ export interface GitSnapshot {
   root:string;
   key:string;
   dirty:string[];
+  untracked?:string[];
   inventory?: Inventory;
   greps:Map<string,string[]>;
   results:Map<string,string>;
@@ -161,7 +165,22 @@ async function metadata(files:string[]):Promise<string>{
 
 export async function prepareColdScope(root:string):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
-  if(layout){
+  if(layout)layouts.set(root,layout);
+  // Git for Windows scans tracked and untracked entries in one status pass.
+  // Avoid a second filesystem walk in Node and sequential fallbacks on NTFS.
+  if(layout && process.platform==="win32"){
+    const tracked=readTrackedIndexPaths(root,layout);
+    if(tracked){
+      const state=await gitSnapshot(root);
+      if(state){
+        const untracked=state.untracked??[];
+        const inventory={files:[...tracked,...untracked],untracked};
+        state.inventory=inventory;
+        return [state,inventory];
+      }
+    }
+  }
+  if(layout && process.platform!=="win32"){
     // All three operations are read-only and independent. The index validation
     // establishes clean tracked bytes. Git supplies staged and untracked changes.
     const [verified,untracked,staged]=await Promise.all([
@@ -206,13 +225,14 @@ export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
   ]);
   if(!rows || !layout)return null;
   const markers=controlFiles(root,layout);
-  const hash=createHash("sha256"), dirty:string[]=[];
+  const hash=createHash("sha256"), dirty:string[]=[],untracked:string[]=[];
   for(const row of rows){
     if(row.startsWith("#")){hash.update(row).update("\0");continue;}
     const file=row.startsWith("? ")?row.slice(2):row.replace(/^(?:1 (?:\S+ ){7}|u (?:\S+ ){9})/,"");
     if(!file.startsWith(layout.prefix))continue;
     const rel=file.slice(layout.prefix.length);
     if(rel.startsWith(".gentle-graph/") && rel!==".gentle-graph/guide.json")continue;
+    if(row.startsWith("? "))untracked.push(rel);
     hash.update(row).update("\0");
     markers.push(path.join(root,rel));
     if(isIndexableFile(rel))dirty.push(rel);
@@ -223,7 +243,7 @@ export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
     old.checkedAt=Date.now();
     return old;
   }
-  const snapshot:GitSnapshot={root,key,dirty,markers,stamp,checkedAt:Date.now(),greps:new Map(),results:new Map()};
+  const snapshot:GitSnapshot={root,key,dirty,untracked,markers,stamp,checkedAt:Date.now(),greps:new Map(),results:new Map()};
   snapshots.set(root,snapshot);
   return snapshot;
 }

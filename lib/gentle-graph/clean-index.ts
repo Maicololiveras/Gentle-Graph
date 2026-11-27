@@ -37,6 +37,7 @@ export async function verifiedCleanIndex(root:string,layout:GitLayout):Promise<{
   const ns=1_000_000_000n;
   const cutoff=before.mtimeNs;
   const suspects:string[]=[];
+  const profile=process.env.GENTLE_GRAPH_PROFILE==="1"?{start:performance.now(),coarse:0,type:0,racy:0,metadata:0,missing:0}:undefined;
   let totalPathChars=0;
   for(let start=0;start<files.length && totalPathChars<=10000;start+=64){
     await Promise.all(files.slice(start,start+64).map(async (file,i)=>{
@@ -46,12 +47,12 @@ export async function verifiedCleanIndex(root:string,layout:GitLayout):Promise<{
         suspects.push(file);
         totalPathChars+=file.length+12;
       }
-      if(!ctimeNs || !mtimeNs){verifyWithGit();return;}
+      if(!ctimeNs || !mtimeNs){if(profile)profile.coarse++;verifyWithGit();return;}
       const mode=buffer.readUInt32BE(at+24);
-      if((mode&0o170000)!==0o100000){verifyWithGit();return;}
+      if((mode&0o170000)!==0o100000){if(profile)profile.type++;verifyWithGit();return;}
       const ctime=BigInt(buffer.readUInt32BE(at))*ns+BigInt(ctimeNs);
       const mtime=BigInt(buffer.readUInt32BE(at+8))*ns+BigInt(mtimeNs);
-      if(ctime>=cutoff || mtime>=cutoff){verifyWithGit();return;}
+      if(ctime>=cutoff || mtime>=cutoff){if(profile)profile.racy++;verifyWithGit();return;}
       try{
         const stat=await fs.promises.lstat(path.join(root,file),{bigint:true});
         // Git for Windows stores creation time in sd_ctime. Node also exposes
@@ -60,10 +61,11 @@ export async function verifiedCleanIndex(root:string,layout:GitLayout):Promise<{
         if(!stat.isFile() || stat.size!==BigInt(buffer.readUInt32BE(at+36))
           || stat.mtimeNs!==mtime || indexCtime!==ctime || stat.ctimeNs>=cutoff
           || process.platform!=="win32" && ((Number(stat.mode)&0o100)!==(mode&0o100)
-              || Number(stat.ino & 0xffffffffn)!==buffer.readUInt32BE(at+20)))verifyWithGit();
-      }catch{verifyWithGit();}
+              || Number(stat.ino & 0xffffffffn)!==buffer.readUInt32BE(at+20))){if(profile)profile.metadata++;verifyWithGit();}
+      }catch{if(profile)profile.missing++;verifyWithGit();}
     }));
   }
   const after=fs.statSync(indexFile,{bigint:true,throwIfNoEntry:false});
+  if(profile){const {start,...causes}=profile;console.error(JSON.stringify({graphProfile:"index",tracked:files.length,suspects:suspects.length,ms:performance.now()-start,...causes}));}
   return totalPathChars<=10000 && before.mtimeNs===after?.mtimeNs && before.ctimeNs===after?.ctimeNs ? {files,suspects} : undefined;
 }

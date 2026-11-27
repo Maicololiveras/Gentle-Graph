@@ -26,6 +26,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
   await lane.stopping;
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
+  const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
   const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:query});
   return new Promise((resolve, reject) => {
     let checkpoint = "Partial impact (time budget reached)\n" + query.term;
@@ -54,6 +55,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
 
     function message(reply: {text?: string; error?: string; checkpoint?: string; timedOut?: boolean}) {
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
+      if(started!==undefined)console.error(JSON.stringify({graphProfile:"reply",kind:query.kind,cold,ms:performance.now()-started}));
       finish();
       if (reply.timedOut) resolve(checkpoint);
       else if (reply.error) reject(new Error(reply.error));
@@ -67,6 +69,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     async function send() {
       // Run the first Git commands while Node loads the language adapters in the worker.
       const prepared = cold ? await prepareColdScope(query.root) : undefined;
+      if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
     }
     send().catch(err => {
