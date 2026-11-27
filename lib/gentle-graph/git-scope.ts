@@ -345,8 +345,13 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
-        const prepared=await inventorySnapshot();
-        if(prepared)return prepared;
+        const state=await gitSnapshot(root);
+        if(state){
+          const untracked=state.untracked??[];
+          const inventory={files:tracked.concat(untracked),untracked};
+          state.inventory=inventory;
+          return [state,inventory];
+        }
       }
       // A single unqualified lowercase-initial name is the first literal of
       // inspect. Overlap its read-only search with status on large worktrees.

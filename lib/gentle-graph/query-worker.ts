@@ -2,10 +2,10 @@ import {existsSync} from "node:fs";
 import path from "node:path";
 import {typescript,workspaceCompiler} from "./languages/typescript.ts";
 import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
-import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
+import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,coldTrackedPaths,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
 import {syncGraphIndex,cachedScope} from "./indexer.ts";
-import {guideFromScope} from "./query-guide.ts";
+import {guideFromScope,previewTrackedGuide} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
 import {impactSteps} from "./query-impact.ts";
 import {runAsync} from "./query-shared.ts";
@@ -40,6 +40,11 @@ if (initial.compiler) {
 }
 
 const profileCache={};
+let previews:ReturnType<typeof previewTrackedGuide>;
+if(initial.kind==="guide" && process.platform==="win32"){
+  const tracked=coldTrackedPaths(initial.root);
+  if(tracked)previews=previewTrackedGuide(initial.root,initial.term,tracked);
+}
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
@@ -56,7 +61,8 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
   mode=scope.degraded?"degraded":scope.mode;
   if(q.kind==="guide"){
-    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache));
+    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache,previews));
+    previews=undefined;
   } else if(q.kind==="inspect"){
     text=formatInspect(await runAsync(q.root,inspectSteps(q.term,q,q.root,scope),state));
   } else {
