@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import {rootLayout,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
+import {rootLayout,onlyTrackedEntries,trackedGuideChanges,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
 import {projectionArgs,projectionPattern} from "./git-projection.ts";
 import { promisify } from "node:util";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
@@ -350,6 +350,16 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
+        if(tracked.length<=5000 && await onlyTrackedEntries(root,tracked)){
+          const [worktree,staged]=await Promise.all([
+            trackedGuideChanges(root,layout,isIndexableFile),
+            requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
+          ]);
+          if(worktree && staged){
+            const prepared=await snapshotFromChanges(root,layout,worktree.files,[],staged,worktree.changed);
+            if(prepared)return prepared;
+          }
+        }
         // One Git process owns status semantics (including attributes, staged
         // changes and ignored files). Avoid competing with it for NTFS reads.
         const rows=await requireGitPaths(root,["status","--porcelain=v1","-z","--no-renames","--untracked-files=all","--","."]);

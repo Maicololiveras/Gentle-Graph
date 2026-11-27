@@ -598,3 +598,19 @@ it("rechecks preview contents before publishing the selected guide files", async
   const {index} = indexSpecificFiles(root, [file], {paths:new Set(paths), prepared, preview:true});
   assert.deepEqual(index.files[file].exports, ["checkToken"]);
 });
+
+it("delegates unknown entries and directories replacing tracked files to Git",async t=>{
+  const {onlyTrackedEntries}=await import("../lib/gentle-graph/clean-index.ts");
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"gg-inventory-"));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,"src"));
+  fs.writeFileSync(path.join(root,"src","entry.ts"),"");
+  const files=["src/entry.ts"];
+  assert.equal(await onlyTrackedEntries(root,files),true);
+  fs.writeFileSync(path.join(root,"new.ts"),"");
+  assert.equal(await onlyTrackedEntries(root,files),false);
+  fs.unlinkSync(path.join(root,"new.ts"));
+  fs.unlinkSync(path.join(root,"src","entry.ts"));
+  fs.mkdirSync(path.join(root,"src","entry.ts"));
+  assert.equal(await onlyTrackedEntries(root,files),false);
+});
