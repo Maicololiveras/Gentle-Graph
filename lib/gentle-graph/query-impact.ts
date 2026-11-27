@@ -61,6 +61,43 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   if (alternatives.length > 1) return { target, alternatives: alternatives.map(s => s.id),
     directCallers: [], transitiveCallers: [], affectedFiles: [], relatedTests: [], affectedPatterns: [] };
   const guide = loadArchGuide(resolved);
+  const expandedScopes=new Set<string>();
+  const packages=new Map<string,string>();
+  function goPackage(file:string){
+    if(!packages.has(file)){
+      let name="";
+      try{name=fs.readFileSync(path.join(resolved,file),"utf8").match(/^\s*package\s+(\w+)/m)?.[1]??"";}catch{}
+      packages.set(file,name);
+    }
+    return packages.get(file);
+  }
+  // These modifiers have a language-defined scope. Other adapters can describe
+  // package-internal or conventionally private symbols, so keep their rules.
+  function visibility(s:CodeSymbol){
+    if(s.exported)return "external";
+    if(s.file.endsWith(".go"))return "package";
+    if(/\bprivate\b/.test(s.signature)){
+      if(s.file.endsWith(".cs"))return "partial-type";
+      if(/\.(?:java|kt|kts|swift)$/.test(s.file))return "file";
+    }
+    return "external";
+  }
+  function inScope(source:CodeSymbol,caller:CodeSymbol){
+    if(source.file===caller.file)return true;
+    switch(visibility(source)){
+      case "file":return false;
+      case "package":return caller.file.endsWith(".go") && path.posix.dirname(source.file)===path.posix.dirname(caller.file) && goPackage(source.file)===goPackage(caller.file);
+      case "partial-type":{
+        if(caller.file+".cs"===source.file && caller.file.endsWith(".xaml"))return true;
+        const owner=source.name.split(".")[0];
+        return caller.file.endsWith(".cs") && caller.name.startsWith(owner+".")
+          && index.files[caller.file]?.namespace===index.files[source.file]?.namespace
+          && index.files[caller.file]?.symbols.some(s=>s.name===owner && /\bpartial\b/.test(s.signature));
+      }
+      default:return true;
+    }
+  }
+
   function traverse() {
     const { importers, symbolById, symbolByName, callersByName } = getLookup(index);
     const byId = symbolById.get(target);
@@ -76,6 +113,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
       for (const name of frontier) {
         for (const s of callersByName.get(name) ?? []) {
           if (seen.has(s.id) || !exists(s.file)) continue;
+          if(previous.length && !previous.some(t=>(symbolNames(t.name).includes(name) || t.contracts?.includes(name)) && inScope(t,s)))continue;
           if (s.file.endsWith(".xaml") && !previous.filter(t => symbolNames(t.name).includes(name)).some(t => bindingMatches(index, s, t))) continue;
           if (s.qualifiedCalls && isTestFile(s.file) && !previous.some(t => s.qualifiedCalls!.includes(t.name) && symbolByName.get(t.name)?.length === 1)) continue;
           found.push(s);
@@ -109,7 +147,25 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   let closure = modular ? moduleImpact(resolved,scope,initial,projected,deadline) : traverse();
   if(checkpoint) checkpoint({target,...closure,partial:true,relatedTests:closure.affectedFiles.filter(isTestFile),affectedPatterns:[]});
   while (!modular && scope.mode === "jit" && performance.now()<deadline) {
-    const terms = [...closure.directCallers, ...closure.transitiveCallers].map(c => c.name);
+    const terms:string[]=[];
+    const localFiles=new Set<string>();
+    for(const ref of [...closure.directCallers,...closure.transitiveCallers]){
+      const symbol=index.files[ref.file]?.symbols.find(s=>s.name===ref.name && s.line===ref.line);
+      const scopeKind=symbol && visibility(symbol);
+      if(scopeKind==="file")continue;
+      if(scopeKind==="package"){
+        const dir=path.posix.dirname(ref.file);
+        if(!expandedScopes.has(dir)){
+          expandedScopes.add(dir);
+          for(const f of files)if(f.endsWith(".go") && path.posix.dirname(f)===dir && goPackage(f)===goPackage(ref.file))localFiles.add(f);
+        }
+      } else if(scopeKind==="partial-type"){
+        const owner=ref.name.split(".")[0];
+        // A split C# type is discoverable by its owner even for a generic private method.
+        if(index.files[ref.file].symbols.some(s=>s.name===owner && /\bpartial\b/.test(s.signature)))terms.push(owner);
+      } else terms.push(ref.name);
+    }
+    if(localFiles.size)indexSpecificFiles(resolved,localFiles,{paths:scope.paths,deadline});
     terms.push(...closure.contracts);
     const paths: string[] = [];
     for (const file of [...closure.origins, ...closure.affectedFiles]) {
@@ -117,7 +173,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
       // Directory imports can resolve to index.ts even via "." or "..".
       paths.push(stem === "index" ? "." : stem);
     }
-    if (!(yield* search(terms,paths))) break;
+    if (!(yield* search(terms,paths)) && !localFiles.size) break;
     closure = traverse();
   }
   const { origins, affectedFiles, directCallers, transitiveCallers } = closure;

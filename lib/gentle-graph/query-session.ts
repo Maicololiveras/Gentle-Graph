@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
-import {gitSnapshot,gitSessionInventory,clearGitSession} from "./git-scope.ts";
+import {prepareColdScope,clearGitSession} from "./git-scope.ts";
 
 export interface Query {
   kind: "guide" | "inspect" | "impact";
@@ -66,9 +66,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     worker.once("error", error);
     async function send() {
       // Run the first Git commands while Node loads the language adapters in the worker.
-      const prepared = cold ? await Promise.all([
-        gitSnapshot(query.root), gitSessionInventory(query.root,null)
-      ]) : undefined;
+      const prepared = cold ? await prepareColdScope(query.root) : undefined;
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
     }
     send().catch(error);

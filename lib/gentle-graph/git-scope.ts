@@ -2,6 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {rootLayout,verifiedCleanIndex,type GitLayout} from "./clean-index.ts";
 import { promisify } from "node:util";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
 import { isIndexableFile, sourceExtensions } from "./languages/registry.ts";
@@ -14,7 +15,6 @@ const grepArgs = ["grep", "--untracked", "-I", "-z", "-l", "-F", "-f", "-", "--"
   ":(exclude,glob)**/.gentle-graph/**", ":(exclude,glob)**/node_modules/**"];
 const layoutArgs = ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "--show-prefix"];
 
-type GitLayout = { dir:string; common:string; prefix:string };
 type Inventory = { files:string[]; untracked:string[]; dirty?:string[] };
 type GitFailure = { code?:string|number; status?:number; killed?:boolean; stderr?:string|Buffer };
 export class GitScopeError extends Error {
@@ -157,6 +157,41 @@ async function metadata(files:string[]):Promise<string>{
     hash.update(stamps.join(""));
   }
   return hash.digest("hex");
+}
+
+export async function prepareColdScope(root:string):Promise<[GitSnapshot|null,Inventory|null]>{
+  const layout=rootLayout(root);
+  if(layout){
+    // All three operations are read-only and independent. The index validation
+    // establishes clean tracked bytes. Git supplies staged and untracked changes.
+    const [verified,untracked,staged]=await Promise.all([
+      verifiedCleanIndex(root,layout),
+      gitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+      gitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
+    ]);
+    if(verified && untracked && staged){
+      const {files,suspects}=verified;
+      const changedOnDisk=suspects.length ? await gitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
+      if(changedOnDisk===null)return [null,null];
+      const markers=controlFiles(root,layout);
+      const head=fs.readFileSync(markers[0],"utf8").trimEnd();
+      let oid=head;
+      if(head.startsWith("ref: ")){
+        try{oid=fs.readFileSync(markers.at(-1),"utf8").trimEnd();}catch{oid="";}
+      }
+      if(/^[0-9a-f]{40}$/.test(oid)){
+        const changed=[...new Set([...untracked,...staged,...changedOnDisk])].filter(f=>!f.startsWith(".gentle-graph/") || f===".gentle-graph/guide.json");
+        markers.push(...changed.map(f=>path.join(root,f)));
+        const stamp=await metadata(markers);
+        const key=createHash("sha256").update(oid).update(JSON.stringify(changed)).update(stamp).digest("hex");
+        const inventory={files:[...files,...untracked],untracked};
+        const state:GitSnapshot={root,key,dirty:changed.filter(isIndexableFile),inventory,greps:new Map(),results:new Map(),checkedAt:Date.now(),markers,stamp};
+        layouts.set(root,layout);
+        return [state,inventory];
+      }
+    }
+  }
+  return Promise.all([gitSnapshot(root),gitSessionInventory(root,null)]);
 }
 
 export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{

@@ -66,8 +66,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const explicit = manual.length || guide.matchingPatterns.length || guide.recommendedModules.some(m => m.boundaries.length);
   guide.boundaries = (explicit ? manual : profile.boundaries).filter(line=>!isFixturePath(line));
   if (!explicit) {
-    const tokens = tokenizeIntent(intent);
-    const slice = profile.slices.find(s => tokens.some(t => path.posix.basename(s).toLowerCase().includes(t)));
+    const slice = profile.slices.find(s => words.some(t => path.posix.basename(s).toLowerCase().includes(t)));
     if (slice) {
       guide.slice = "Ubica el caso de uso en " + slice;
       guide.suggestedPath.unshift(guide.slice);
@@ -77,13 +76,22 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const entryCalls=new Set(entry?.symbols.flatMap(s=>s.calls));
   const lookup=getLookup(index);
   const neighborExports = new Set(guide.recommendedModules.slice(1,3).flatMap(m=>index.files[m.file].exports));
-  const testByStem=new Map<string,string>();
-  for(const file of scope.knownFiles){
-    if(!isTestFile(file))continue;
-    const stem=path.posix.parse(file).name.replace(/(?:[._-](?:test|spec))$/i,"");
-    if(!testByStem.has(stem))testByStem.set(stem,file);
+  const top = guide.recommendedModules.slice(0, 3);
+  const missingTests = new Set(top.map(module => path.posix.parse(module.file).name));
+  const testByStem = new Map<string, string>();
+  // Only the three displayed modules need a convention-based test candidate.
+  for (const file of scope.knownFiles) {
+    if (!missingTests.size) break;
+    const start = file.lastIndexOf("/") + 1;
+    for (const stem of missingTests) {
+      if (!file.startsWith(stem, start) || !isTestFile(file)) continue;
+      if (path.posix.parse(file).name.replace(/(?:[._-](?:test|spec))$/i, "") !== stem) continue;
+      testByStem.set(stem, file);
+      missingTests.delete(stem);
+      break;
+    }
   }
-  for (const module of guide.recommendedModules.slice(0,3)) {
+  for (const module of top) {
     const node=index.files[module.file];
     const operations=node.symbols.filter(s=>s.exported && (s.kind==="function" || s.kind==="method" || s.kind==="const"));
     const score=(s:CodeSymbol)=> (module.file===entry?.path && s.calls.some(c=>neighborExports.has(c))?12:0)+(entryCalls.has(s.name)?6:0)+words.filter(w=>s.name.toLowerCase().includes(w)).length*2

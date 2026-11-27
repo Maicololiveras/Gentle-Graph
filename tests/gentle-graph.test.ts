@@ -481,3 +481,18 @@ it("matches Git's tracked, untracked, staged and unstaged paths across index lay
   assert.equal(readTrackedIndexPaths(root),undefined);
   assert.deepEqual(gitWorkspaceInventory(root).files,gitInventory(root).files);
 });
+
+it("keeps Go package-private transitive callers inside their package", t=>{
+  const root=largeRepo(t);
+  for(const dir of ["engine","other"])fs.mkdirSync(path.join(root,dir));
+  const put=(file:string,src:string)=>fs.writeFileSync(path.join(root,file),src);
+  put("engine/root.go","package engine\nfunc CalculateThing() {}\nfunc get() { CalculateThing() }");
+  put("engine/caller.go","package engine\nfunc Execute() { get() }");
+  put("other/noise.go","package other\nfunc get() {}\nfunc Detached() { get() }");
+  git(root,"add",".");
+  git(root,"commit","-qm","Go package scope");
+  const result=graphImpact("CalculateThing",{projectRoot:root});
+  assert.ok(result.transitiveCallers.some(s=>s.name==="Execute"));
+  assert.ok(!result.transitiveCallers.some(s=>s.name==="Detached"));
+  assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
+});

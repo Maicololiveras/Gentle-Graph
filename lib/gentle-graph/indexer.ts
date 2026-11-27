@@ -246,7 +246,7 @@ export function syncGraphIndex(projectRoot: string, options: boolean | { fullSyn
   }
   const discoveredAt = Date.now();
   const provided = typeof options === "object" ? options.inventory : undefined;
-  const inventory = provided === undefined ? gitWorkspaceInventory(root) : provided;
+  const inventory = provided === undefined ? (force ? gitInventory(root) : gitWorkspaceInventory(root)) : provided;
   const { knownFiles, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root, inventory);
   const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? inventory?.dirty ?? gitDirtyFilesSync(root, untracked)) : null;
   const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
