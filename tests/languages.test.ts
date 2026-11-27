@@ -280,3 +280,34 @@ it("SvelteKit links component use and script imports through $lib",async t=>{
   assert.equal(resolveImport(page.symbol.file,"$lib/Card.svelte",new Set(["src/lib/Card.svelte"])),"src/lib/Card.svelte");
   assert(isTestFile("component.test.svelte"));
 });
+
+for (const fixture of [
+  {ext:"cpp",port:"class Port {\npublic:\n virtual int read() = 0;\n};",impl:'#include "port.h"\nnamespace demo {\nclass Db : public Port {\n int run() { return load(); }\n};\n}',consumer:"class Client {\n Port* port;\n};",test:"db_test.cpp"},
+  {ext:"kt",port:"interface Port {}",impl:"package sample\nimport demo.Port\nclass Db(val id: Int) : Port {\n fun run() { load() }\n}",consumer:"class Client(val port: Port) {}",test:"DbTest.kt"},
+  {ext:"swift",port:"protocol Port {}",impl:"import SwiftUI\nactor Db {}\nextension Db: Port {\n func run() { load() }\n}",consumer:"struct Client {\n let port: Port\n}",test:"DbTests.swift"},
+  {ext:"dart",port:"abstract class Port {}",impl:"import 'port.dart';\nclass Db implements Port {\n void run() { load(); }\n}",consumer:"class Client {\n final Port port;\n}",test:"db_test.dart"}
+]) it(fixture.ext+" resolves implementations and keeps consumers separate", t=>{
+  const opts=project(t,{["port."+fixture.ext]:fixture.port,["db."+fixture.ext]:fixture.impl,["client."+fixture.ext]:fixture.consumer});
+  assert.deepEqual(graphInspect("Port",opts)[0].implementations.map(s=>s.name),["Db"]);
+  const parsed=parseSourceFile(".","db."+fixture.ext,fixture.impl);
+  assert(parsed.symbols.some(s=>s.name==="Db.run" && s.calls.includes("load")));
+  assert(isTestFile(fixture.test));
+});
+
+it("detects mobile frameworks from manifests and parsed Swift imports",t=>{
+  const opts=project(t,{"android/build.gradle.kts":'plugins { id("com.android.application") }\ndependencies { implementation("io.ktor:ktor-client") }',
+    "android/AppViewModel.kt":"class AppViewModel {}","ios/AppViewModel.swift":"import SwiftUI\nclass AppViewModel {}",
+    "flutter/pubspec.yaml":"dependencies:\n  flutter:\n    sdk: flutter\n  flutter_bloc: any\n  hooks_riverpod: any"});
+  const architecture=graphGuide("viewmodel",opts).architecture;
+  for (const label of ["SwiftUI MVVM","Android MVVM","Ktor","Flutter","BLoC","Riverpod"]) assert(architecture.includes(label),label);
+});
+
+it("follows C and C++ local headers and locates an out-of-class method", async t=>{
+  const opts=project(t,{"include/port.h":"struct Port {};","src/store.cc":'#include "../include/port.h"\nint Store::run() { return work(); }',
+    "src/check.c":'#include "../include/port.h"\nint check(void) { return work(); }'});
+  const {resolveImport}=await import("../lib/gentle-graph/languages/registry.ts");
+  assert.equal(resolveImport("src/store.cc","../include/port.h",new Set(["include/port.h"])),"include/port.h");
+  assert.equal(graphInspect("Store::run",opts)[0].symbol.file,"src/store.cc");
+  assert(graphInspect("check",opts)[0].callees.some(s=>s.name==="work"));
+  assert(isTestFile("src/check_test.c"));
+});

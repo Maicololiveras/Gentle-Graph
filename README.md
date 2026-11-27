@@ -49,6 +49,18 @@ El cronómetro incluye la consulta, el descubrimiento de rutas y la escritura de
 
 ### Lenguajes, WPF y guía arquitectónica
 
+La opción `includeSnippets: true` de `graph_guide` añade hasta tres símbolos de los módulos recomendados con código, llamadores, llamadas e implementaciones explícitas. La respuesta ampliada usa hasta 3000 caracteres. La guía habitual conserva el límite de 2400. Las referencias dependen de las declaraciones que reconoce el adaptador.
+
+| Ecosistema | Evidencia que puede encontrar |
+| --- | --- |
+| Java y PHP | Clases, métodos, interfaces, herencia e implementaciones. Señales de Spring Boot, Laravel y Symfony. |
+| Ruby | Clases, módulos, métodos, herencia y mixins. Rails en Gemfile. |
+| SvelteKit | Componentes importados, uso en el template, rutas y alias estándar `$lib`. |
+| C y C++ | Includes locales, funciones, métodos calificados y bases de clases. |
+| Kotlin y Swift | Interfaces y protocolos, clases, actores y extensiones. Señales de Android MVVM, Ktor y SwiftUI. |
+| Dart y Flutter | Clases, mixins y referencias declaradas en pubspec.yaml a Flutter, BLoC y Riverpod. |
+
+
 El índice reconoce TS/JS, Python, Go, Rust, C# y XAML. Puedes consultar métodos por nombre cualificado, como `Store.Get` o `Client::fetch`. En WPF, prueba `graph_impact("SaveOrderAsync")` para seguir el comando generado por el Toolkit hasta la vista que lo enlaza. Las dependencias por interfaz indican consumidores potenciales. El análisis es estático y funciona sin MSBuild ni intérprete de Python.
 
 La guía combina carpetas, manifiestos y símbolos ya indexados para reconocer capas, slices y patrones de UI. El perfil por worktree se guarda en `.gentle-graph/profile.json`. Para soluciones .NET incluye los paquetes y las referencias entre proyectos declaradas en los archivos `.csproj`. Las reglas de `guide.json` y los contratos del proyecto tienen prioridad sobre las fronteras inferidas.
