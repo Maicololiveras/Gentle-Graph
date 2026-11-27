@@ -84,13 +84,42 @@ test("captures tracked and new files around ignored modules without changing the
   assert.deepEqual(git("status","--porcelain=v1","-z"),status);
 });
 
-test("cleanup retries locked worktrees and continues after a persistent error",async ()=>{
+test("cleanup retries locked worktrees and continues after a persistent error",async t=>{
   const {cleanWorktrees}=await import("../scripts/bench-shell/abc-worktree.mjs");
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"abc-retry-"));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const [good,busy,preserve]=["good","busy","preserve"].map(name=>path.join(dir,name));
   const calls=[];
-  const errors=await cleanWorktrees([["repo","good"],["repo","busy"],["repo","preserve"]],(_root,cwd)=>{
+  const errors=await cleanWorktrees([["repo",good],["repo",busy],["repo",preserve]],(_root,cwd)=>{
     calls.push(cwd);
-    if(cwd==="busy")throw Error("locked");
-  },new Set(["preserve"]));
-  assert.deepEqual(calls,["busy","busy","busy","busy","good"]);
-  assert.deepEqual(errors,[{cwd:"busy",error:"Error: locked"}]);
+    if(cwd===busy)throw Error("locked");
+  },new Set([preserve]),()=>true);
+  assert.deepEqual(calls,[busy,busy,busy,busy,good]);
+  assert.deepEqual(errors,[{cwd:busy,error:"Error: locked"}]);
+});
+
+test("cleanup removes an unregistered CodeGraph directory and preserves sibling worktrees",async t=>{
+  const {execFileSync}=await import("node:child_process");
+  const {cleanWorktrees}=await import("../scripts/bench-shell/abc-worktree.mjs");
+  const temp=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),"abc-orphan-")));
+  t.after(()=>fs.rmSync(temp,{recursive:true,force:true}));
+  const root=path.join(temp,"repo"), arm=path.join(temp,"r3-gs-codegraph"), sibling=path.join(temp,"historical");
+  fs.mkdirSync(root);
+  const git=(...args)=>execFileSync("git",args,{cwd:root,windowsHide:true,stdio:"pipe"});
+  git("init","-q");
+  git("-c","user.name=Test","-c","user.email=test@example.invalid","commit","--allow-empty","-qm","fixture");
+  for(const dir of [arm,sibling])git("worktree","add","--detach",dir,"HEAD");
+  let attempts=0;
+  const errors=await cleanWorktrees([[root,arm]],()=>{
+    attempts++;
+    git("worktree","remove","--force",arm);
+    fs.mkdirSync(path.join(arm,".codegraph"),{recursive:true});
+    fs.writeFileSync(path.join(arm,".codegraph","index"),"residue");
+    throw Error("Invalid argument");
+  });
+  assert.deepEqual(errors,[]);
+  assert.equal(attempts,1);
+  assert.equal(fs.existsSync(arm),false);
+  assert.ok(fs.existsSync(path.join(sibling,".git")));
+  assert.ok(git("worktree","list","--porcelain").toString().includes("historical"));
 });

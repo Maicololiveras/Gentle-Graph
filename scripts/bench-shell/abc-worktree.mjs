@@ -22,7 +22,15 @@ export function capturePatch(cwd) {
   }
 }
 
-export async function cleanWorktrees(worktrees, remove, retained = new Set()) {
+function registeredWorktree(root, cwd) {
+  const output = execFileSync("git", ["-C",root,"worktree","list","--porcelain","-z"], {
+    encoding:"utf8", windowsHide:true
+  });
+  const key = p => process.platform === "win32" ? path.resolve(p).toLowerCase() : path.resolve(p);
+  return output.split("\0").some(field => field.startsWith("worktree ") && key(field.slice(9)) === key(cwd));
+}
+
+export async function cleanWorktrees(worktrees, remove, retained = new Set(), registered = registeredWorktree) {
   const errors = [];
   for (const [root,cwd] of [...worktrees].reverse()) {
     if (retained.has(cwd)) continue;
@@ -31,7 +39,16 @@ export async function cleanWorktrees(worktrees, remove, retained = new Set()) {
       try {
         const link = path.join(cwd,"node_modules");
         if (fs.lstatSync(link,{throwIfNoEntry:false})?.isSymbolicLink()) fs.unlinkSync(link);
-        remove(root,cwd);
+        if (registered(root,cwd)) {
+          try {
+            remove(root,cwd);
+          } catch (error) {
+            // Git can unregister the checkout before Windows releases its directory.
+            if (registered(root,cwd)) throw error;
+          }
+        }
+        // cwd is a disposable checkout created and recorded by this invocation.
+        fs.rmSync(path.toNamespacedPath(cwd),{recursive:true,force:true,maxRetries:3,retryDelay:200});
         break;
       } catch (error) {
         if (wait === 1000) errors.push({cwd,error:String(error)});
