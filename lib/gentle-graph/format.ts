@@ -28,6 +28,7 @@ export function formatGuide(g: GuideRecommendation): string {
 
 export function formatInspect(matches: InspectResult[]): string {
   if (!matches.length) return "No matching symbols.";
+  if (matches[0].alternatives) return compact(["Ambiguous symbol. Inspect one file#symbol:", ...matches[0].alternatives], 3000);
   return compact(matches.flatMap(m => [
     `${m.symbol.file}:${m.symbol.line}  ${m.symbol.signature}`,
     ...(m.evidence ?? []).map(s => s.role + " " + s.file + ":" + s.line + " → " + [...(s.via ?? []), s.text ?? s.qualified ?? s.target].join(" → ")),
@@ -36,7 +37,9 @@ export function formatInspect(matches: InspectResult[]): string {
 }
 
 export function formatImpact(i: ImpactResult): string {
-  return compact([i.target, field("Tests", i.relatedTests), field("Files", i.affectedFiles),
+  if (i.alternatives) return compact(["Ambiguous symbol. Use one file#symbol:", ...i.alternatives], 2000);
+  return compact([i.target, field("Test dependencies (static)", i.dependencyTests ?? i.relatedTests),
+    field("Test candidates (name only)", i.namedTests ?? []), field("Files", i.affectedFiles),
     field("Direct", refs(i.directCallers)), field("Indirect", refs(i.transitiveCallers)),
     field("Patterns", i.affectedPatterns.map(p => p.entry))], 2000);
 }

@@ -133,7 +133,7 @@ it("traces a WPF DataContext and both Prism callbacks despite unrelated MVC fold
       "private bool CanCalculateKngSup(object arg) { return true; }", "}"
     ].join("\n"),
     "Calc/Knight.cs": "public class Knight {\npublic void CalculateItemKnightSupports() {}\n}",
-    "Tests/KnightSupportTests.cs": "public class KnightSupportTests {\n public void ChecksHelper() { CalculateItemKnightSupports(); }\n}",
+    "Tests/KnightSupportTests.cs": "public class KnightSupportTests {\n public void ChecksHelper(Knight calculator) { calculator.CalculateItemKnightSupports(); }\n}",
     "Controllers/Root.cs":"class Root {}", "Services/S.cs":"class S {}"
   });
   const summary = graphGuide("architecture", opts).architecture!;
@@ -186,4 +186,32 @@ it("attributes command test evidence to the receiver type, including homonymous 
   const result = graphInspect("SaveCommand",{...opts,depth:2})[0];
   assert.deepEqual(result.evidence!.filter(s=>s.role === "Test call").map(s=>[s.qualified,s.line]), [["FirstVM.Measure",3]]);
   assert.ok(!result.callees.some(c=>c.file === "Other.cs"));
+});
+
+for (const jit of [false, true]) it("scopes BOM command evidence and removes absent test paths, JIT=" + jit, t => {
+  const files: Record<string,string> = {
+    "BillOfMaterialVM.Tests/GlobalUsings.cs":"global using System;",
+    "BillOfMaterialVM.Tests/DocumentOutputRegressionTests.cs":"class DocumentOutputRegressionTests {}",
+    "BillOfMaterialVMTests.cs":"class BillOfMaterialVMTests {}"
+  };
+  for (const name of ["BillOfMaterial","Accessories"]) {
+    files[name+"VM.cs"] = "public class "+name+"VM {\npublic ICommand GenerateCommand { get; }\n}";
+    files[name+".xaml"] = '<View x:Class="'+name+'"><Button Command="{Binding GenerateCommand}"/></View>';
+    files[name+".xaml.cs"] = "public partial class "+name+" {\npublic "+name+"() { DataContext = new "+name+"VM(); }\n}";
+  }
+  if (jit) for(let i=0;i<505;i++) files["f"+i+".ts"] = "export const x = 1;";
+  const opts = project(t, files);
+  const git = (...args: string[]) => execFileSync("git",args,{cwd:opts.projectRoot,stdio:"pipe"});
+  git("init","-q"); git("add","."); git("-c","user.name=test","-c","user.email=t@example.invalid","commit","-qm","fixture");
+  const key = "BillOfMaterialVM.cs#GenerateCommand";
+  assert.ok(graphImpact("GenerateCommand",opts).alternatives?.includes(key));
+  const inspect = graphInspect(key,opts)[0];
+  assert.deepEqual(inspect.evidence?.filter(s=>s.role === "Binding").map(s=>s.file),["BillOfMaterial.xaml"]);
+  assert.deepEqual(inspect.callers.map(s=>s.file),["BillOfMaterial.xaml"]);
+  const before = graphImpact(key,opts);
+  assert.deepEqual(before.namedTests,["BillOfMaterialVMTests.cs"]);
+  assert.deepEqual(before.dependencyTests,[]);
+  assert.ok(!before.affectedFiles.includes("Accessories.xaml"));
+  fs.unlinkSync(path.join(opts.projectRoot,"BillOfMaterialVMTests.cs"));
+  for(const query of [key,"BillOfMaterialVM.cs"]) assert.deepEqual(graphImpact(query,opts).relatedTests,[]);
 });

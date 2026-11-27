@@ -88,6 +88,7 @@ export interface SymbolRef {
 }
 
 export interface InspectResult {
+  alternatives?: string[];
   evidence?: (SourceSite & { file: string; via?: string[] })[];
   symbol: CodeSymbol;
   snippet: string;
@@ -96,6 +97,9 @@ export interface InspectResult {
 }
 
 export interface ImpactResult {
+  alternatives?: string[];
+  dependencyTests?: string[];
+  namedTests?: string[];
   target: string;
   directCallers: SymbolRef[];
   transitiveCallers: SymbolRef[];

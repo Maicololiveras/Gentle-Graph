@@ -8,6 +8,7 @@ import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
 import { getLookup, loadArchGuide, symbolNames } from "./store.ts";
 import type {
   CodeSymbol,
+  GraphIndex,
   GraphStatus,
   GuideRecommendation,
   ImpactResult,
@@ -15,6 +16,16 @@ import type {
   PatternEntry,
   SymbolRef
 } from "./types.ts";
+
+function bindingMatches(index: GraphIndex, view: CodeSymbol, target: CodeSymbol) {
+  if (!view.file.endsWith(".xaml") || target.kind !== "property") return true;
+  const owners = getLookup(index).symbolByName.get(target.name)?.filter(s => s.kind === "property") ?? [];
+  const contexts = index.files[view.file + ".cs"]?.dataContexts ?? [];
+  if (!contexts.length) return owners.length === 1;
+  const containsContext = (s: CodeSymbol) => index.files[s.file]?.symbols.some(type =>
+    type.kind === "class" && contexts.includes(type.name) && type.line <= s.line && type.endLine >= s.line);
+  return owners.filter(containsContext).length === 1 && containsContext(target);
+}
 
 function readBoundedSnippet(projectRoot: string, relFile: string, startLine: number, endLine: number, maxLines = 25): string {
   try {
@@ -172,6 +183,7 @@ export function graphInspect(
       const keys = new Set(symbolNames(target.name));
       const candidates = new Set([...keys].flatMap(key => callersByName.get(key) ?? []));
       for (const caller of candidates) {
+        if (!bindingMatches(index, caller, target)) continue;
         for (const site of caller.sites ?? []) {
           if (!roles.includes(site.role) || !keys.has(site.target)) continue;
           if (site.role === "Test call" && (site.qualified !== target.name || byName.get(target.name)?.length !== 1)) continue;
@@ -215,26 +227,32 @@ export function graphInspect(
 
     const callers: SymbolRef[] = [];
     const seenCallers = new Set<string>([rootSym.id]);
+    let previous = [rootSym];
     let callerTargets = new Set<string>(symbolNames(rootSym.name));
 
     for (let hop = 1; hop <= maxDepth; hop++) {
       const nextTargets = new Set<string>();
+      const found: CodeSymbol[] = [];
       for (const candidate of [...callerTargets].flatMap(name => callersByName.get(name) ?? [])) {
         if (seenCallers.has(candidate.id)) continue;
+        if (candidate.file.endsWith(".xaml") && !previous.some(t => candidate.calls.some(name => symbolNames(t.name).includes(name)) && bindingMatches(index, candidate, t))) continue;
         if (candidate.qualifiedCalls && isTestFile(candidate.file) &&
             !candidate.qualifiedCalls.some(ref => callerTargets.has(ref) && byName.get(ref)?.length === 1)) continue;
         if (candidate.calls.some((c) => callerTargets.has(c))) {
           seenCallers.add(candidate.id);
+          found.push(candidate);
           const site = candidate.sites?.find(s => callerTargets.has(s.qualified ?? s.target));
           callers.push({ name: candidate.name, file: candidate.file, line: site?.line ?? candidate.line, hop });
           for (const key of symbolNames(candidate.name)) nextTargets.add(key);
         }
       }
+      previous = found;
       callerTargets = nextTargets;
       if (callerTargets.size === 0) break;
     }
 
     return {
+      ...(exact.length > 1 && !byId ? { alternatives: exact.map(s => s.id) } : {}),
       evidence,
       symbol: rootSym,
       snippet: readBoundedSnippet(resolved, rootSym.file, rootSym.line, rootSym.endLine),
@@ -260,6 +278,17 @@ export function graphImpact(
   if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { paths: scope.paths, followImports: 1 });
   search(isFile ? (index.files[target]?.symbols ?? []).map(s => s.name) : [target.split("#").at(-1) ?? target]);
   const files = scope.knownFiles;
+  const live = new Map<string, boolean>();
+  function exists(file: string) {
+    if (!live.has(file)) {
+      try { live.set(file, fs.lstatSync(path.join(resolved, file)).isFile()); }
+      catch { live.set(file, false); }
+    }
+    return live.get(file)!;
+  }
+  const alternatives = isFile ? [] : (getLookup(index).symbolByName.get(target) ?? []).filter(s => s.kind === "property" && exists(s.file));
+  if (alternatives.length > 1) return { target, alternatives: alternatives.map(s => s.id),
+    directCallers: [], transitiveCallers: [], affectedFiles: [], relatedTests: [], affectedPatterns: [] };
   const guide = loadArchGuide(resolved);
   function traverse() {
     const { importers, symbolById, symbolByName, callersByName } = getLookup(index);
@@ -269,16 +298,22 @@ export function graphImpact(
     let frontier = roots.length ? roots.flatMap(s => [...symbolNames(s.name), ...(s.contracts ?? [])]) : [target];
     const directCallers: SymbolRef[] = [];
     const transitiveCallers: SymbolRef[] = [];
+    let previous = roots;
     for (let hop = 1; frontier.length; hop++) {
+      const found: CodeSymbol[] = [];
       const next = new Set<string>();
       for (const name of frontier) {
         for (const s of callersByName.get(name) ?? []) {
-          if (seen.has(s.id)) continue;
+          if (seen.has(s.id) || !exists(s.file)) continue;
+          if (s.file.endsWith(".xaml") && !previous.filter(t => symbolNames(t.name).includes(name)).some(t => bindingMatches(index, s, t))) continue;
+          if (s.qualifiedCalls && isTestFile(s.file) && !previous.some(t => s.qualifiedCalls!.includes(t.name) && symbolByName.get(t.name)?.length === 1)) continue;
+          found.push(s);
           seen.add(s.id);
           for (const key of symbolNames(s.name)) next.add(key);
           (hop === 1 ? directCallers : transitiveCallers).push({ name: s.name, file: s.file, line: s.line, hop });
         }
       }
+      previous = found;
       frontier = [...next];
     }
 
@@ -289,6 +324,7 @@ export function graphImpact(
     const visited = new Set([...origins, ...dependentFiles]);
     for (const file of visited) {
       for (const dependent of importers.get(file) ?? []) {
+        if (!exists(dependent)) continue;
         visited.add(dependent);
         if (!origins.has(dependent)) dependentFiles.add(dependent);
       }
@@ -310,13 +346,19 @@ export function graphImpact(
     closure = traverse();
   }
   const { origins, affectedFiles, directCallers, transitiveCallers } = closure;
-  const stems = [target, ...origins, ...affectedFiles].map((file) => path.basename(file, path.extname(file)).toLowerCase());
-  const relatedTests = files.filter(
-    (f) =>
-      isTestFile(f) &&
-      stems.some((stem) => f.toLowerCase().includes(stem))
-  );
-
+  // .Tests projects can contain helpers, GlobalUsings and build metadata.
+  const testSource = (file: string) => isTestFile(file) && (!file.toLowerCase().endsWith(".cs")
+    || /Tests?\.cs$/i.test(file)
+    || index.files[file]?.symbols.some(s => s.kind === "method" && /\[(?:Test|Fact|Theory|TestCase|TestMethod)\b/.test(s.signature)));
+  const dependencyTests = affectedFiles.filter(testSource);
+  const stem = (file: string) => path.posix.parse(file).name.toLowerCase();
+  const stems = new Set([...origins, ...affectedFiles.filter(f => !isTestFile(f))].map(stem));
+  const namedTests = files.filter(file => {
+    if (!testSource(file)) return false;
+    const subject = stem(file).replace(/^test_/, "").replace(/(?:[._-]?(?:tests?|spec))$/, "");
+    return stems.has(subject) && exists(file);
+  });
+  const relatedTests = [...new Set([...dependencyTests, ...namedTests])];
   const affectedPatterns = guide.patterns.filter(
     (p) => p.entry.includes(target) || p.files.includes(target) || p.files.some((f) => affectedFiles.includes(f))
   );
@@ -327,6 +369,8 @@ export function graphImpact(
     transitiveCallers,
     affectedFiles,
     relatedTests,
+    dependencyTests,
+    namedTests: namedTests.filter(file => !dependencyTests.includes(file)),
     affectedPatterns
   };
 }
