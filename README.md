@@ -101,3 +101,5 @@ node scripts/replay-shell-pair.mjs "C:\repos\gentle-shell" "C:\ruta\al\pair-1"
 ```
 
 El replay usa el SHA de Gentle Shell guardado y el motor del clon actual de Gentle Graph. Extrae las consultas de lectura de la sesión B, las mide con índice nuevo por llamada y luego en secuencia, y guarda tiempos, caracteres y archivos indexados en `replay.json`. Después aplica cada parche a su propio worktree temporal y ejecuta la verificación reforzada. Las operaciones que ocurrieron entre consultas en la sesión original no se reproducen. Cada código de salida y su log permiten distinguir errores de tipos, pruebas fallidas e incidencias de entorno.
+
+[Guía de colaboradores y requisitos para abrir una PR](CONTRIBUTING.md)
