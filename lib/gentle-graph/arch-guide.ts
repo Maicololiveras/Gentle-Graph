@@ -54,15 +54,7 @@ function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
   }).filter(row=>row.matches>0).sort((a,b)=>b.matches-a.matches || a.doc.localeCompare(b.doc)).slice(0,2).map(row=>row.doc);
 }
 
-export function recommendPath(
-  projectRoot: string,
-  index: GraphIndex,
-  intent: string,
-  limit = 5
-): GuideRecommendation {
-  const tokens = tokenizeIntent(intent);
-  const guide = loadArchGuide(projectRoot);
-
+export function rankModules(index: GraphIndex, tokens: string[], limit: number): ModuleRecommendation[] {
   const ranked: ModuleRecommendation[] = Object.values(index.files)
     .map((fileNode) => {
       const pathLower = fileNode.path.toLowerCase();
@@ -118,6 +110,18 @@ export function recommendPath(
     }
   }
 
+  return scoredModules;
+}
+
+export function recommendPath(
+  projectRoot: string,
+  index: GraphIndex,
+  intent: string,
+  limit = 5,
+  guide = loadArchGuide(projectRoot)
+): GuideRecommendation {
+  const tokens = tokenizeIntent(intent);
+  const scoredModules = rankModules(index, tokens, limit);
   const matchingPatterns = guide.patterns.filter((p) => {
     if (p.stale) return false;
     const blob = `${p.domain} ${p.entry} ${p.guidance} ${p.files.join(" ")}`.toLowerCase();

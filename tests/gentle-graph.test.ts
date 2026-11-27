@@ -233,7 +233,7 @@ it("picks up untracked, edited and deleted source on the next JIT query", t => {
   const root = largeRepo(t);
   graphGuide("billing", { projectRoot: root });
   const file = path.join(root, "new caller.ts");
-  fs.writeFileSync(file, "export function hot() { return targetFn(); }");
+  fs.writeFileSync(file, 'import {targetFn} from "./billing";\nexport function hot() { return targetFn(); }');
   assert.ok(graphImpact("targetFn", { projectRoot: root }).directCallers.some(c => c.name === "hot"));
   fs.writeFileSync(file, "export function replacement() {}");
   graphGuide("billing", { projectRoot: root });
@@ -249,7 +249,7 @@ it("returns all callers past the grep cap and keeps linked worktrees independent
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "graph-worktree-"));
   t.after(() => { clearMemoryCache(other); fs.rmSync(other, { recursive: true, force: true }); });
   git(root, "worktree", "add", "--detach", other, "HEAD");
-  for (let i = 0; i < 90; i++) fs.writeFileSync(path.join(other, `f${i}.ts`), `export function f${i}() { return targetFn(); }`);
+  for (let i = 0; i < 90; i++) fs.writeFileSync(path.join(other, `f${i}.ts`), `import {targetFn} from "./billing";\nexport function f${i}() { return targetFn(); }`);
   assert.equal(graphImpact("targetFn", { projectRoot: other }).directCallers.length, 91);
   assert.equal(graphImpact("targetFn", { projectRoot: root }).directCallers.length, 1);
 });

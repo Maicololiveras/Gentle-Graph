@@ -1,3 +1,4 @@
+import {moduleImpact,moduleProjection,jsModule} from "./impact-modules.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
@@ -76,9 +77,15 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
 
     return { origins, affectedFiles, directCallers, transitiveCallers, contracts: roots.flatMap(s => s.contracts ?? []) };
   }
-  let closure = traverse();
+  const lookup=getLookup(index);
+  const identified=lookup.symbolById.get(target);
+  const roots=identified?[identified]:isFile?index.files[target]?.symbols??[]:lookup.symbolByName.get(target)??[];
+  const scoped=scope.mode==="jit" && roots.length && roots.every(s=>jsModule(s.file)
+    && (index.files[s.file].imports.length || index.files[s.file].exports.length));
+  const projected = scoped ? yield moduleProjection : null;
+  let closure = projected ? moduleImpact(resolved,scope,roots,projected,deadline) : traverse();
   if(checkpoint) checkpoint({target,...closure,partial:true,relatedTests:closure.affectedFiles.filter(isTestFile),affectedPatterns:[]});
-  while (scope.mode === "jit" && performance.now()<deadline) {
+  while (!projected && scope.mode === "jit" && performance.now()<deadline) {
     const terms = [...closure.directCallers, ...closure.transitiveCallers].map(c => c.name);
     terms.push(...closure.contracts);
     const paths: string[] = [];

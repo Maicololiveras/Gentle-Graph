@@ -1,8 +1,9 @@
+import {moduleProjection,projectionArgs,projectionPattern} from "./impact-modules.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type { GraphIndex, CodeSymbol } from "./types.ts";
 import {getLookup,symbolNames} from "./store.ts";
-import {gitGrepFiles,gitGrepFilesSync,type GitSnapshot} from "./git-scope.ts";
+import {gitGrepFiles,gitGrepFilesSync,gitPaths,gitPathsSync,type GitSnapshot} from "./git-scope.ts";
 import {indexSpecificFiles,syncGraphIndex} from "./indexer.ts";
 export function bindingMatches(index: GraphIndex, view: CodeSymbol, target: CodeSymbol) {
   if (!view.file.endsWith(".xaml") || target.kind !== "property") return true;
@@ -59,16 +60,29 @@ export function searchFrontier(root: string, scope: ReturnType<typeof syncGraphI
 }
 
 
-export type QuerySteps<T> = Generator<string[],T,string[]|null>;
+export type QuerySteps<T> = Generator<string[]|typeof moduleProjection,T,string[]|null>;
 export function runSync<T>(root:string, steps:QuerySteps<T>,deadline=Infinity):T {
   let step=steps.next();
-  while(!step.done) step=steps.next(performance.now()>=deadline?null:gitGrepFilesSync(root,step.value as string[],Infinity,Math.max(1,Math.min(4000,Math.ceil(deadline-performance.now())))));
+  while(!step.done){
+    const remaining=Math.min(4000,Math.ceil(deadline-performance.now()));
+    const rows=remaining<=0?null:step.value===moduleProjection
+      ?gitPathsSync(root,projectionArgs,true,projectionPattern,remaining)
+      :gitGrepFilesSync(root,step.value as string[],Infinity,remaining);
+    step=steps.next(rows);
+  }
   return step.value;
 }
+const projections=new WeakMap<GitSnapshot,string[]>();
 export async function runAsync<T>(root:string,steps:QuerySteps<T>,state:GitSnapshot|null,deadline=Infinity):Promise<T>{
   let step=steps.next();
   while(!step.done){
     const remaining=deadline-performance.now();
+    if(step.value===moduleProjection && remaining>0){
+      const rows=(state && projections.get(state))??await gitPaths(root,projectionArgs,projectionPattern,Math.min(4000,Math.ceil(remaining)));
+      if(state && rows)projections.set(state,rows);
+      step=steps.next(rows);
+      continue;
+    }
     step=steps.next(remaining<=0?null:await gitGrepFiles(root,step.value as string[],Infinity,state,Math.max(1,Math.min(4000,Math.ceil(remaining)))));
   }
   return step.value;

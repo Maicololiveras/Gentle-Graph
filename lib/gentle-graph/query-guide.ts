@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { detectArchitecture } from "./arch-detector.ts";
-import { recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
+import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
 import { graphInspect } from "./query-inspect.ts";
 import { getLookup,loadArchGuide } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
@@ -20,10 +20,11 @@ export function graphGuide(
 }
 export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>){
   const { index } = scope;
+  const words = tokenizeIntent(intent);
+  const rules = loadArchGuide(resolved);
   if (scope.mode === "jit") {
-    const tokens = tokenizeIntent(intent);
-    if (tokens.includes("configuration")) tokens.push("config");
-    const patterns = loadArchGuide(resolved).patterns;
+    const tokens = words.includes("configuration") ? [...words, "config"] : words;
+    const patterns = rules.patterns;
     const referenced = new Set(patterns.flatMap(p => [p.entry.split("#")[0], ...p.files]));
     const dirty = new Set(scope.dirty);
     const ranked: { file: string; score: number }[] = [];
@@ -37,10 +38,10 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       if (ranked.length > 15) ranked.pop();
     }
     indexSpecificFiles(resolved, ranked.map(row => row.file), {paths:scope.paths,preview:true});
-    const seeds=recommendPath(resolved,index,intent,3).recommendedModules;
+    const seeds=rankModules(index,words,3);
     indexSpecificFiles(resolved,seeds.map(m=>m.file),{paths:scope.paths,followImports:1,preview:true});
   }
-  const guide = recommendPath(resolved, index, intent, options.limit ?? 5);
+  const guide = recommendPath(resolved, index, intent, options.limit ?? 5, rules);
   const signals = new Set<string>();
   for (const node of Object.values(index.files)) {
     if (node.language === "swift" && node.imports.includes("SwiftUI")) signals.add("SwiftUI");
@@ -58,10 +59,9 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     guide.architecture = [labels, profile.frameworks.length ? "(" + profile.frameworks.join(", ") + ")" : ""].filter(Boolean).join(" ");
     if (profile.layers.length > 1) guide.architecture += " | layers: " + profile.layers.join(", ");
   }
-  const rules = loadArchGuide(resolved);
   const manual = [rules.boundaries, rules.rules].flatMap(items => Array.isArray(items) ? items.filter(rule => typeof rule === "string") : []);
   const eligible = scope.contracts.filter(f=>!isFixturePath(f));
-  const contracts = eligible.length === 1 ? eligible : eligible.filter(f=>tokenizeIntent(path.posix.basename(f)).some(t=>tokenizeIntent(intent).includes(t)));
+  const contracts = eligible.length === 1 ? eligible : eligible.filter(f=>tokenizeIntent(path.posix.basename(f)).some(t=>words.includes(t)));
   if (contracts.length) manual.push("Consultar "+contracts.slice(0,2).join(", "));
   const explicit = manual.length || guide.matchingPatterns.length || guide.recommendedModules.some(m => m.boundaries.length);
   guide.boundaries = (explicit ? manual : profile.boundaries).filter(line=>!isFixturePath(line));
@@ -75,7 +75,6 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   }
   const entry=index.files[guide.recommendedModules[0]?.file];
   const entryCalls=new Set(entry?.symbols.flatMap(s=>s.calls));
-  const words=tokenizeIntent(intent);
   const lookup=getLookup(index);
   const neighborExports = new Set(guide.recommendedModules.slice(1,3).flatMap(m=>index.files[m.file].exports));
   const testByStem=new Map<string,string>();

@@ -50,9 +50,10 @@ export function formatInspect(matches: InspectResult[]): string {
 
 export function formatImpact(i: ImpactResult): string {
   if (i.alternatives) return compact(["Ambiguous symbol. Use one file#symbol:", ...i.alternatives], 2000);
-  return compact([i.partial ? "Partial impact (time budget reached)" : "", i.target, field("Test dependencies (static)", i.dependencyTests ?? i.relatedTests),
+  return compact([i.partial ? "Partial impact (time budget reached)" : "", i.target, field("Direct", refs(i.directCallers)),
+    field("Test dependencies (static)", i.dependencyTests ?? i.relatedTests),
     field("Test candidates (name only)", i.namedTests ?? []), field("Files", i.affectedFiles),
-    field("Direct", refs(i.directCallers)), field("Indirect", refs(i.transitiveCallers)),
+    field("Indirect", refs(i.transitiveCallers)),
     field("Patterns", i.affectedPatterns.map(p => p.entry))], 2000);
 }
 

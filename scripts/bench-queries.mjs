@@ -31,8 +31,11 @@ for(const [kind,limit] of [["guide",350],["inspect",800],["impact",1000]]) {
         assert.doesNotMatch(result,/fixtures\/|\.fixture\.json|\.snap\b/);
         for(const file of ["lib/agents-config.ts","lib/agent-tool-overlay.ts"])
           assert.ok(result.split("\n").slice(0,3).some(line=>line.startsWith(file+" ") && / L\d+-\d+ .*test tests\//.test(line)),result);
-        assert.match(result,/<- lib\/agents-config\.ts:\d+/);
-      } else if(!result.startsWith("Partial"))assert.match(result,/lib\/agents-config.ts/);
+        assert.match(result,/lib\/agents-config\.ts discoverAgentsIn L285-309 .*tests\/agents-config\.test\.ts/);
+        assert.match(result,/lib\/agent-tool-overlay\.ts loadToolOverlays L64-111 <- lib\/agents-config\.ts:286 test tests\/agent-tool-overlay\.test\.ts/);
+      } else if(!result.startsWith("Partial")) {
+        assert.match(result,/lib\/agents-config\.ts:\d+#discoverAgentsIn/);
+      }
     }
   } finally {
     await closeQuerySessions();

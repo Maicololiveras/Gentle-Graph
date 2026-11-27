@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
-import {gitSnapshot,gitSessionInventory} from "./git-scope.ts";
+import {gitSnapshot,gitSessionInventory,clearGitSession} from "./git-scope.ts";
 
 export interface Query {
   kind: "guide" | "inspect" | "impact";
@@ -52,10 +52,11 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
 
     function exit(code: number) { error(new Error("Graph worker exited (" + code + ")")); }
 
-    function message(reply: {text?: string; error?: string; checkpoint?: string}) {
+    function message(reply: {text?: string; error?: string; checkpoint?: string; timedOut?: boolean}) {
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
       finish();
-      if (reply.error) reject(new Error(reply.error));
+      if (reply.timedOut) resolve(checkpoint);
+      else if (reply.error) reject(new Error(reply.error));
       else resolve(reply.text);
     }
 
@@ -95,6 +96,7 @@ export function sessionQuery(input: Query): Promise<string> {
 export async function closeQuerySessions() {
   const active = [...lanes.values()];
   lanes.clear();
+  clearGitSession();
   await Promise.all(active.map(async lane => {
     lane.closed = true;
     await lane.worker?.terminate();

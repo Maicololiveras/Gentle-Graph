@@ -1,5 +1,5 @@
 import {parentPort} from "node:worker_threads";
-import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,worktreeStamp,type GitSnapshot} from "./git-scope.ts";
+import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {syncGraphIndex} from "./indexer.ts";
 import {guideFromScope} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
@@ -9,14 +9,9 @@ import {formatGuide,formatInspect,formatImpact} from "./format.ts";
 import type {Query} from "./query-session.ts";
 
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
-let lastStamp:string|null=null;
-let lastState:GitSnapshot|null=null;
 async function handle(q:Query,prepared?:Prepared){
   const deadline=performance.now()+1450;
-  const stamp=await worktreeStamp(q.root);
-  const state=prepared ? prepared[0] : stamp!==null && stamp===lastStamp ? lastState : await gitSnapshot(q.root);
-  lastStamp=stamp;
-  lastState=state;
+  const state=prepared ? prepared[0] : await gitSnapshot(q.root);
   if(prepared && state){state.inventory=prepared[1]??undefined;adoptGitSnapshot(state); }
   const key=JSON.stringify(q);
   const cached=state?.results.get(key);
@@ -42,5 +37,6 @@ async function handle(q:Query,prepared?:Prepared){
 }
 parentPort.on("message",async({query,prepared}:{query:Query;prepared?:Prepared})=>{
   try { parentPort.postMessage({text:await handle(query,prepared)}); }
-  catch(e){parentPort.postMessage({error:String(e)});}
+  catch(e){if(query.kind==="impact" && e instanceof GitScopeError && e.timedOut) parentPort.postMessage({timedOut:true});
+    else parentPort.postMessage({error:String(e)});}
 });
