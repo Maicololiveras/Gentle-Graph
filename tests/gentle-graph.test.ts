@@ -462,7 +462,7 @@ it("matches Git's tracked, untracked, staged and unstaged paths across index lay
   const native=gitWorkspaceInventory(root);
   assert.deepEqual(native.files,plain.files);
   assert.deepEqual(new Set(native.dirty),new Set(gitDirtyFilesSync(root,plain.untracked)));
-  assert.equal(readTrackedIndexPaths(root)?.length,554);
+  assert.deepEqual(readTrackedIndexPaths(root),plain.files.filter(file=>!plain.untracked.includes(file)));
   fs.mkdirSync(path.join(root,"nested"));
   assert.equal(readTrackedIndexPaths(path.join(root,"nested")),undefined);
   const linked=fs.mkdtempSync(path.join(os.tmpdir(),"gg-native-linked-"));
