@@ -179,3 +179,39 @@ export async function trackedGuideChanges(root:string,layout:GitLayout,source:(f
   const after=fs.statSync(indexPath,{bigint:true,throwIfNoEntry:false});
   if(before.ctimeNs===after?.ctimeNs && before.ino===after.ino)return {files,changed};
 }
+
+// A directory listing can prove that there are no untracked entries without
+// interpreting ignore rules. Any unfamiliar name delegates that decision to Git.
+export async function onlyTrackedEntries(root:string, files:string[]):Promise<boolean>{
+  const expected=new Map<string,Set<string>>();
+  for(const file of files){
+    let child=file;
+    while(child){
+      const slash=child.lastIndexOf("/");
+      const parent=slash<0?"":child.slice(0,slash);
+      const name=child.slice(slash+1);
+      let names=expected.get(parent);
+      if(!names){names=new Set();expected.set(parent,names);}
+      if(names.has(name))break;
+      names.add(name);
+      child=parent;
+    }
+  }
+  const directories=[...expected.keys()];
+  for(let start=0;start<directories.length;start+=24){
+    const checks=await Promise.all(directories.slice(start,start+24).map(async dir=>{
+      try{
+        const entries=await fs.promises.readdir(path.join(root,dir),{withFileTypes:true});
+        return entries.every(e=>{
+          if(!dir && e.name===".git")return true;
+          if(!expected.get(dir)!.has(e.name))return false;
+          const relative=dir?dir+"/"+e.name:e.name;
+          // A directory replacing a tracked file may contain untracked sources.
+          return e.isDirectory() === expected.has(relative);
+        });
+      }catch{return false;}
+    }));
+    if(checks.includes(false))return false;
+  }
+  return true;
+}
