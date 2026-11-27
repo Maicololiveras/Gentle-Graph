@@ -110,11 +110,21 @@ function ensureGraphDir(projectRoot: string): string {
   return dir;
 }
 
+function retrySharingError<T>(work:()=>T):T {
+  for(let attempt=0;;attempt++){
+    try{return work();}
+    catch(error){
+      if(process.platform!=="win32" || !["EPERM","EACCES","EBUSY"].includes(error.code) || attempt>=10)throw error;
+      Atomics.wait(sleep,0,0,15+Math.floor(Math.random()*36));
+    }
+  }
+}
+
 function writeAtomic(filePath: string, data: unknown): void {
   const tmp = `${filePath}.${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(tmp, JSON.stringify(data, null, path.basename(filePath) === GUIDE_FILE ? 2 : undefined), "utf8");
-    fs.renameSync(tmp, filePath);
+    retrySharingError(()=>fs.renameSync(tmp,filePath));
   } catch (error) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* Preserve the original write failure. */ }
     throw error;
@@ -165,17 +175,11 @@ export function loadGraphIndex(projectRoot:string):GraphIndex{
 const sleep=new Int32Array(new SharedArrayBuffer(4));
 function withFileLock<T>(file:string,work:()=>T):T{
   const limit=Date.now()+15000;
-  let sharingRetries=0;
+
   for(;;){
     let fd:number;
-    try{fd=fs.openSync(file,"wx");}
+    try{fd=retrySharingError(()=>fs.openSync(file,"wx"));}
     catch(error){
-      // NTFS may briefly report access denied while another process deletes
-      // its lock. Retry exclusive creation, never unlink on a sharing error.
-      if(process.platform==="win32" && ["EPERM","EACCES","EBUSY"].includes(error.code) &&
-          sharingRetries++<10 && Date.now()<limit){
-        Atomics.wait(sleep,0,0,15+Math.floor(Math.random()*36));continue;
-      }
       if(error.code!=="EEXIST")throw error;
       const stat=fs.statSync(file,{throwIfNoEntry:false});
       if(stat && Date.now()-stat.mtimeMs>5000){
@@ -199,7 +203,7 @@ function withFileLock<T>(file:string,work:()=>T):T{
       Atomics.wait(sleep,0,0,15+Math.floor(Math.random()*36));continue;
     }
     try{fs.writeFileSync(fd,String(process.pid));return work();}
-    finally{fs.closeSync(fd);fs.rmSync(file,{force:true});}
+    finally{fs.closeSync(fd);retrySharingError(()=>fs.rmSync(file,{force:true}));}
   }
 }
 // Host queries are serialized per root. Combine intermediate frontier updates

@@ -25,7 +25,7 @@ if(process.argv[2]==="--child"){
       git(repo,"worktree","add","--detach","-q",engine,ref);
       git(host,"worktree","add","--detach","-q",root,"c9b59eab57a56224c76b99e1caa9bb94cb113dc8");
       fs.symlinkSync(path.join(repo,"node_modules"),path.join(engine,"node_modules"),process.platform==="win32"?"junction":"dir");
-      const child=spawnSync(process.execPath,["--import",hook,script,"--child",engine,root],{encoding:"utf8",windowsHide:true});
+      const child=spawnSync(process.execPath,["--import",hook,script,"--child",engine,root],{encoding:"utf8",windowsHide:true,env:{...process.env,GENTLE_GRAPH_PROFILE:"1"}});
       if(child.status!==0)throw Error(child.stderr||child.error?.message);
       const spans=child.stderr.split(/\r?\n/).filter(l=>l.startsWith("GUIDE_SPAN ")).map(l=>JSON.parse(l.slice(11)));
       const timings={};
@@ -34,8 +34,10 @@ if(process.argv[2]==="--child"){
         timings[name]={count:filtered.length,ms:Number(filtered.reduce((sum,s)=>sum+s.end-s.start,0).toFixed(3))};
       }
       assert.ok(timings.parse.count>0 && timings.saveIndex.count>0,"Instrumentation must observe actual parsing and persistence");
+      const events=child.stderr.split(/\r?\n/).filter(l=>l.startsWith('{"graphProfile":')).map(l=>JSON.parse(l));
+      const inventoryMs=events.find(e=>e.graphProfile==="scope" && e.cold)?.ms;
       const dbCreated=fs.existsSync(path.join(root,".gentle-graph/index.sqlite"));
-      console.log("COLD_GUIDE "+JSON.stringify({ref,sha:git(engine,"rev-parse","HEAD"),...JSON.parse(child.stdout.trim()),dbCreated,timings}));
+      console.log("COLD_GUIDE "+JSON.stringify({ref,sha:git(engine,"rev-parse","HEAD"),...JSON.parse(child.stdout.trim()),dbCreated,inventoryMs,timings}));
       if(ref==="HEAD")for(const name of ["storeModule","nativeModule","databaseOpen","migration","guideLockAcquire"])assert.equal(timings[name].count,0,name);
       assert.equal(dbCreated,false);
     }finally{
