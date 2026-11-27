@@ -1,0 +1,14 @@
+name: Set up Gentle Graph CI
+description: Install the pinned Node runtime and host-only test dependencies
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10
+    - name: Install host types and compiler
+      shell: bash
+      run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund typescript@5.9.3 @types/node@24.13.3 typebox@1.1.38 @earendil-works/pi-coding-agent@1.6.0
