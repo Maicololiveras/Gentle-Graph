@@ -278,18 +278,19 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
       const inventorySnapshot = async ():Promise<[GitSnapshot,Inventory]|undefined> => {
-        // Independent Git plumbing reads can overlap the NTFS directory scan
-        // with tracked-file verification. Preserve staged and unstaged paths
-        // separately, including a staged edit undone only in the worktree.
-        const [untracked,staged,changed]=await Promise.all([
-          requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
-          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."]),
-          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."])
+        // ls-files can report both unstaged and untracked paths in the same
+        // process. Keep the cached diff separate for staged-only changes.
+        const [rows,staged]=await Promise.all([
+          requireGitPaths(root,["ls-files","-t","--modified","--deleted","--others","--exclude-standard","-z","--","."]),
+          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
         ]);
-        if(untracked && staged && changed){
-          const prepared=await snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
-          if(prepared)return prepared;
+        if(!rows || !staged)return;
+        const changed:string[]=[],untracked:string[]=[];
+        for(const row of rows){
+          if(row.startsWith("? "))untracked.push(row.slice(2));
+          else changed.push(row.slice(2));
         }
+        return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
         const prepared=await inventorySnapshot();
@@ -307,7 +308,7 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // status reports staged, unstaged and untracked changes together. With
       // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
-        gitSnapshot(root),
+        inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)),
         combined ? combined.then(result=>result?.hits) : simple ? requireGitPaths(root,grepArgs.filter(arg=>arg!=="--untracked"),inspectTerm+"\n").then(rows=>rows?.filter(isIndexableFile)).catch(()=>null) : null,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
