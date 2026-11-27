@@ -98,9 +98,11 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
     if (bytes.readUInt32BE(offsets[i]+8)>=second) folders.add(group(files[i]));
   }
   if ([...folders].reduce((sum,f)=>sum+f.length+20,0)>32000) return false;
+  const remaining = new Set<string>();
   const prefix = root + path.sep;
   for (let i=0; i<files.length; i++) {
-    if (!folders.has(group(files[i]))) continue;
+    const parent=group(files[i]);
+    if (!folders.has(parent)){remaining.add(parent);continue;}
     const at = offsets[i];
     const mode = bytes.readUInt32BE(at+24);
     if ((mode & 0o170000) !== 0o100000) return false;
@@ -117,5 +119,12 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
         (Number(st.mode)&0o100) !== (mode&0o100)) return false;
   }
   const after = fs.statSync(index,{bigint:true,throwIfNoEntry:false});
-  return after?.ctimeNs === snapshot.ctimeNs && after.ino === snapshot.ino ? folders : false;
+  if(after?.ctimeNs!==snapshot.ctimeNs || after.ino!==snapshot.ino)return false;
+  // diff-files concerns tracked entries only. When the smaller side fits,
+  // ask Git for the unchecked directories directly (and skip it if empty).
+  if(remaining.size<=folders.size){
+    const include=[...remaining].map(name=>":(literal)"+name);
+    if(include.reduce((n,arg)=>n+arg.length+1,0)<=32000)return include;
+  }
+  return [".",...[...folders].map(name=>":(exclude,literal)"+name)];
 }

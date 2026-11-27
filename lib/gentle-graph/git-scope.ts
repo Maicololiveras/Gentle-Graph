@@ -115,9 +115,9 @@ export function gitWorkspaceInventory(root: string): Inventory | null {
     offsets.push(offset);
   } : undefined);
   if (!tracked) return gitInventory(root);
-  const folders = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
-  if (folders && layout) {
-    const remaining = gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",".", ...[...folders].map(f=>":(exclude,literal)"+f)]);
+  const unchecked = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
+  if (unchecked && layout) {
+    const remaining = unchecked.length ? gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",...unchecked]) : [];
 
     const untracked = gitPathsSync(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]);
     const staged = gitPathsSync(root, ["diff", "--cached", "--name-only", "--no-renames", "-z", "--", "."]);
