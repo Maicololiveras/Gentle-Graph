@@ -159,6 +159,30 @@ export function gitGrepFilesSync(root:string,literal:string|string[],maxFiles=80
   return rows?.split("\0").filter(isIndexableFile).slice(0,maxFiles)??null;
 }
 
+// Read the worktree once for both the target and the reverse-import projection.
+export async function grepImpactProjection(root:string, term:string){
+  if(!/^[a-z][a-zA-Z0-9_]*$/.test(term))return null;
+  const args=[...projectionArgs.slice(0,projectionArgs.indexOf("--")+1),...grepArgs.slice(grepArgs.indexOf("--")+1)];
+  const rows=await requireGitPaths(root,args,projectionPattern+term+"\n");
+  if(!rows)return null;
+  const hits=new Set<string>();
+  const projection:string[]=[];
+  let file=rows[0];
+  for(const row of rows.slice(1)){
+    const newline=row.indexOf("\n");
+    if(newline<0) return null;
+    const match=row.slice(0,newline).replace(/\r$/,"");
+    if(match.includes(term) && isIndexableFile(file))hits.add(file);
+    if((match[0]==="'" || match[0]==='"') && /\.(?:[cm]?[jt]s|[jt]sx|svelte)$/.test(file)){
+      if(!projection.length)projection.push(file);
+      else projection[projection.length-1]+=file;
+      projection.push(match+"\n");
+    }
+    file=row.slice(newline+1);
+  }
+  return {hits:[...hits],projection};
+}
+
 export interface GitSnapshot {
   root:string;
   key:string;
@@ -253,10 +277,13 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // inspect. Overlap its read-only search with status on large worktrees.
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
+      const projectImports=impact && fs.existsSync(path.join(root,"tsconfig.json"));
+      const combined=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!)
+        ? grepImpactProjection(root,inspectTerm!).catch(()=>null) : undefined;
       const [state, hits, projection] = await Promise.all([
         impact ? inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)) : gitSnapshot(root),
-        simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
-        impact && fs.existsSync(path.join(root,"tsconfig.json")) ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
+        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
+        combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
       if (simple && state && !state.dirty.length && hits) {

@@ -318,7 +318,7 @@ it("reopens a large WAL index, updates and removes individual entries", async ()
 });
 
 it("JIT literal search includes untracked source files and ignores graph artifacts", async () => {
-  const { gitGrepFiles } = await import("../lib/gentle-graph/git-scope.ts");
+  const { gitGrepFiles, grepImpactProjection, gitPathsSync } = await import("../lib/gentle-graph/git-scope.ts");
   const { execFileSync } = await import("node:child_process");
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"graph-grep-"));
   try {
@@ -330,6 +330,11 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     fs.writeFileSync(path.join(dir,"note.md"),"alpha");
     fs.writeFileSync(path.join(dir,".gentle-graph","generated.ts"),"alpha");
     assert.deepEqual((await gitGrepFiles(dir,["alpha","-port[5]"],Infinity))?.sort(),["client.py","src/query.TS"]);
+    fs.writeFileSync(path.join(dir,"src","entry.ts"),"import './alpha';\r\nimport './other';\r\nalpha();");
+    const combined=await grepImpactProjection(dir,"alpha");
+    const {projectionArgs,projectionPattern}=await import("../lib/gentle-graph/git-projection.ts");
+    assert.deepEqual(combined?.hits.sort(),["client.py","src/entry.ts"]);
+    assert.deepEqual(combined?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
