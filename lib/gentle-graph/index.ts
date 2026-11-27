@@ -168,18 +168,21 @@ export function graphInspect(
     const evidence: NonNullable<InspectResult["evidence"]> = (rootSym.sites ?? [])
       .filter(s => s.role === "Execute" || s.role === "CanExecute")
       .map(site => ({ ...site, file: rootSym.file }));
-    const collectSites = (target: CodeSymbol, roles: string[]) => {
+    const collectSites = (target: CodeSymbol, roles: string[], via?: string[]) => {
       const keys = new Set(symbolNames(target.name));
       const candidates = new Set([...keys].flatMap(key => callersByName.get(key) ?? []));
       for (const caller of candidates) {
         for (const site of caller.sites ?? []) {
-          if (roles.includes(site.role) && keys.has(site.target)) evidence.push({ ...site, file: caller.file });
+          if (!roles.includes(site.role) || !keys.has(site.target)) continue;
+          if (site.role === "Test call" && (site.qualified !== target.name || byName.get(target.name)?.length !== 1)) continue;
+          evidence.push({ ...site, file: caller.file, via });
         }
       }
     };
     collectSites(rootSym, ["Binding", "Test call"]);
     const callees: SymbolRef[] = [];
     const seenCallees = new Set<string>([rootSym.name]);
+    const routes = new Map<string, string[]>([[rootSym.id, [rootSym.name]]]);
     let frontier: CodeSymbol[] = [rootSym];
 
     for (let hop = 1; hop <= maxDepth; hop++) {
@@ -188,7 +191,10 @@ export function graphInspect(
         for (const callName of node.calls) {
           if (seenCallees.has(callName)) continue;
           seenCallees.add(callName);
-          const resolvedTarget = byName.get(callName)?.[0];
+          const qualified = node.qualifiedCalls?.filter(ref => ref.endsWith("." + callName));
+          const key = qualified === undefined ? callName : qualified.length === 1 ? qualified[0] : undefined;
+          const possible = key ? byName.get(key) : undefined;
+          const resolvedTarget = possible?.length === 1 ? possible[0] : undefined;
           callees.push(
             resolvedTarget
               ? { name: callName, file: resolvedTarget.file, line: resolvedTarget.line, hop }
@@ -196,7 +202,11 @@ export function graphInspect(
           );
           if (resolvedTarget) {
             nextFrontier.push(resolvedTarget);
-            if (rootSym.sites?.some(s => s.role === "Execute") && hop <= maxDepth) collectSites(resolvedTarget, ["Test call"]);
+            if (rootSym.sites?.some(s => s.role === "Execute")) {
+              const via = routes.get(node.id)!;
+              routes.set(resolvedTarget.id, [...via, resolvedTarget.name]);
+              collectSites(resolvedTarget, ["Test call"], via);
+            }
           }
         }
       }
@@ -211,9 +221,11 @@ export function graphInspect(
       const nextTargets = new Set<string>();
       for (const candidate of [...callerTargets].flatMap(name => callersByName.get(name) ?? [])) {
         if (seenCallers.has(candidate.id)) continue;
+        if (candidate.qualifiedCalls && isTestFile(candidate.file) &&
+            !candidate.qualifiedCalls.some(ref => callerTargets.has(ref) && byName.get(ref)?.length === 1)) continue;
         if (candidate.calls.some((c) => callerTargets.has(c))) {
           seenCallers.add(candidate.id);
-          const site = candidate.sites?.find(s => callerTargets.has(s.target));
+          const site = candidate.sites?.find(s => callerTargets.has(s.qualified ?? s.target));
           callers.push({ name: candidate.name, file: candidate.file, line: site?.line ?? candidate.line, hop });
           for (const key of symbolNames(candidate.name)) nextTargets.add(key);
         }

@@ -9,6 +9,7 @@ export type SymbolKind =
   | "trait" | "record" | "enum" | "property" | "event";
 
 export interface SourceSite {
+  qualified?: string;
   target: string;
   role: "Execute" | "CanExecute" | "Binding" | "Test call";
   line: number;
@@ -17,6 +18,7 @@ export interface SourceSite {
 
 export interface CodeSymbol {
   sites?: SourceSite[];
+  qualifiedCalls?: string[];
   id: string;
   name: string;
   kind: SymbolKind;
@@ -86,7 +88,7 @@ export interface SymbolRef {
 }
 
 export interface InspectResult {
-  evidence?: (SourceSite & { file: string })[];
+  evidence?: (SourceSite & { file: string; via?: string[] })[];
   symbol: CodeSymbol;
   snippet: string;
   callees: SymbolRef[];

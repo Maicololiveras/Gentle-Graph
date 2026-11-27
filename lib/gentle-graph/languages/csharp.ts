@@ -95,15 +95,30 @@ export const csharp: LanguageAdapter = {
         (command.sites ??= []).push({ target: ref, role, line: registrationLine(match.index!) });
       }
     }
-    if (csharp.isTestFile(file)) {
-      for (const method of result.symbols.filter(s => s.kind === "method")) {
-        const names = new Set(method.calls);
-        for (let n = method.line - 1; n < method.endLine; n++) {
-          for (const match of clean[n].matchAll(/\b(\w+)\s*(?:<[^<>;]+>)?\s*\(/g)) {
-            if (names.has(match[1])) (method.sites ??= []).push({ role: "Test call", target: match[1], line: n + 1 });
-          }
+    const testFile = csharp.isTestFile(file);
+    for (const method of result.symbols.filter(s => s.kind === "method")) {
+      const owner = method.name.split(".")[0];
+      const types = new Map<string, string>();
+      const names = new Set(method.calls);
+      const verified = new Set<string>();
+      for (let n = method.line - 1; n < method.endLine; n++) {
+        const line = clean[n];
+        for (const m of line.matchAll(/\b([A-Z]\w*)(?:<[^<>;]+>)?\s+(\w+)\s*(?=[,)=;])/g)) types.set(m[2], m[1]);
+        for (const m of line.matchAll(/\bvar\s+(\w+)\s*=\s*new\s+([A-Z]\w*)/g)) types.set(m[1], m[2]);
+        for (const m of line.matchAll(/\b(\w+)\s*(?:<[^<>;]+>)?\s*\(/g)) {
+          if (!names.has(m[1])) continue;
+          const before = line.slice(0, m.index).trimEnd();
+          const receiver = before.match(/(?:^|[^.\w?])(\w+)\s*\??\.\s*$/)?.[1];
+          const type = before.endsWith(".")
+            ? receiver === "this" ? owner : receiver && (types.get(receiver) ?? (/^[A-Z]/.test(receiver) ? receiver : undefined))
+            : owner;
+          if (!type) continue;
+          const qualified = type + "." + m[1];
+          verified.add(qualified);
+          if (testFile) (method.sites ??= []).push({ role: "Test call", target: m[1], qualified, line: n + 1 });
         }
       }
+      method.qualifiedCalls = [...verified];
     }
     if (/\.xaml\.cs$/i.test(file)) {
       const types = new Set<string>();

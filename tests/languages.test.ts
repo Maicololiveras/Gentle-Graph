@@ -157,7 +157,7 @@ it("reports exact binding, callback roles and test call sites for the GIS comman
       "public DiagramVM() {","CalculateCommand = new DelegateCommand(", "CalculateKngSup, CanCalculateKngSup);","}",
       "public void CalculateKngSup() { CalculateItemKnightSupports(); }",
       "public bool CanCalculateKngSup() { return true; }","public void CalculateItemKnightSupports() {}","}"].join("\n"),
-    "KnightSupportTests.cs": ["public class KnightSupportTests {","[Test] public void Check() {",
+    "KnightSupportTests.cs": ["public class KnightSupportTests {","[Test] public void Check() { var vm = new DiagramVM();",
       "// CalculateItemKnightSupports();","vm.CalculateItemKnightSupports();","vm.CalculateItemKnightSupports();","}","}"].join("\n")
   });
   const result = graphInspect("CalculateCommand", { ...opts, depth: 2 })[0];
@@ -168,5 +168,22 @@ it("reports exact binding, callback roles and test call sites for the GIS comman
   const tests = evidence.filter(s => s.role === "Test call");
   assert.deepEqual(tests.map(s => [s.line,s.target]), [[4,"CalculateItemKnightSupports"],[5,"CalculateItemKnightSupports"]]);
   assert.equal(result.callers.find(c => c.file === "Diagram.xaml")?.line, 3);
-  assert.deepEqual(graphInspect("CalculateItemKnightSupports", opts)[0].evidence?.filter(s=>s.role === "Test call"), tests);
+  assert.deepEqual(tests[0].via, ["CalculateCommand", "DiagramVM.CalculateKngSup"]);
+  const direct = graphInspect("CalculateItemKnightSupports", opts)[0].evidence?.filter(s=>s.role === "Test call");
+  assert.deepEqual(direct, tests.map(s => ({ ...s, via: undefined })));
+});
+
+it("attributes command test evidence to the receiver type, including homonymous domain helpers", t => {
+  const opts = project(t, {
+    "FirstVM.cs": ["public class FirstVM {","public ICommand SaveCommand { get; }",
+      "public FirstVM() { SaveCommand = new DelegateCommand(Save); }",
+      "public void Save() { Measure(); text.ToString(); items.Contains(1); }",
+      "public void Measure() {}","}"].join("\n"),
+    "Other.cs": ["public class Other {","public void Measure() {}","public string ToString() { return null; }","public bool Contains(int x) { return true; }","}"].join("\n"),
+    "MixedTests.cs": ["public class MixedTests {","public void Check(FirstVM first, Other other) {",
+      "first.Measure();","other.Measure();","other.ToString();","other.Contains(1);","unknown.Measure();","}","}"].join("\n")
+  });
+  const result = graphInspect("SaveCommand",{...opts,depth:2})[0];
+  assert.deepEqual(result.evidence!.filter(s=>s.role === "Test call").map(s=>[s.qualified,s.line]), [["FirstVM.Measure",3]]);
+  assert.ok(!result.callees.some(c=>c.file === "Other.cs"));
 });
