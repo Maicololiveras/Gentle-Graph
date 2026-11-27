@@ -4,6 +4,10 @@ import os from "node:os";
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomInt } from "node:crypto";
 import { fileURLToPath } from "node:url";
+if (process.argv[2] === "--abc") {
+  const {runABC} = await import("./bench-shell/abc.mjs");
+  await runABC(process.argv.slice(3));
+} else {
 const [repoArg,model,pairsArg="1",outArg] = process.argv.slice(2);
 const pairs=Number(pairsArg);
 if (!repoArg || !model || !Number.isSafeInteger(pairs) || pairs<1 || !model.includes("/")) throw new Error("Usage: node scripts/bench-gentle-shell.mjs SHELL_REPO PROVIDER/MODEL PAIRS [NEW_OUTPUT_DIR]");
@@ -73,3 +77,4 @@ for(let i=0;i<pairs;i++){
   if(!improved) { console.error("Quality or performance gate failed. Check results.json, verification.txt and agent-stderr.txt before spending more.");process.exitCode=1;break; }
 }
 console.log("Summary:",path.join(out,"summary.json"));
+}
