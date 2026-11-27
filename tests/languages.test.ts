@@ -120,3 +120,31 @@ it("indexes .NET DI registrations, generic constructor dependencies, events and 
   assert.ok(nodes["Handler.cs"].symbols[0].calls.includes("SaveOrder"));
   assert.ok(!nodes["Meta.AssemblyInfo.cs"]);
 });
+
+it("traces a WPF DataContext and both Prism callbacks despite unrelated MVC folder names", t => {
+  const opts = project(t, {
+    "UI/wpfDiagram.xaml": '<UserControl x:Class="GIS.wpfDiagram"><Button Command="{Binding CalculateKnightSupportCommand}"/></UserControl>',
+    "UI/wpfDiagram.xaml.cs": "public partial class wpfDiagram {\n public wpfDiagram() { DataContext = new DiagramVM(); }\n}",
+    "Product/DiagramVM.cs": [
+      "public class DiagramVM {", "public ICommand CalculateKnightSupportCommand { get; }",
+      "public DiagramVM() {", "CalculateKnightSupportCommand = new DelegateCommand<object>(",
+      "this.CalculateKngSup, CanCalculateKngSup);", "}",
+      "private void CalculateKngSup(object arg) { CalculateItemKnightSupports(); }",
+      "private bool CanCalculateKngSup(object arg) { return true; }", "}"
+    ].join("\n"),
+    "Calc/Knight.cs": "public class Knight {\npublic void CalculateItemKnightSupports() {}\n}",
+    "Tests/KnightSupportTests.cs": "public class KnightSupportTests {\n public void ChecksHelper() { CalculateItemKnightSupports(); }\n}",
+    "Controllers/Root.cs":"class Root {}", "Services/S.cs":"class S {}"
+  });
+  const summary = graphGuide("architecture", opts).architecture!;
+  assert.match(summary, /WPF MVVM/);
+  assert.doesNotMatch(summary, /MVC/);
+  assert.ok(graphInspect("DiagramVM", opts).some(r => r.callers.some(s => s.file === "UI/wpfDiagram.xaml.cs")));
+  const command = graphInspect("CalculateKnightSupportCommand", opts)[0];
+  for (const name of ["DiagramVM.CalculateKngSup","DiagramVM.CanCalculateKngSup"]) {
+    assert.ok(command.callees.some(r => r.name === name));
+    assert.ok(graphImpact(name, opts).affectedFiles.includes("UI/wpfDiagram.xaml"));
+  }
+  assert.ok(!graphImpact("CalculateKngSup",opts).relatedTests.includes("Tests/KnightSupportTests.cs"));
+  assert.ok(graphImpact("CalculateItemKnightSupports",opts).relatedTests.includes("Tests/KnightSupportTests.cs"));
+});

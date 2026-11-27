@@ -25,7 +25,7 @@ function readSmall(root: string, file: string) {
 
 export function detectArchitecture(root: string, knownFiles: string[], manifests: string[], signals: string[] = []): ArchitectureProfile {
   const inventory = knownFiles.join("\n");
-  const hash = createHash("sha256").update("gentle-profile-v1\0").update(inventory).update("\0" + signals.join("|"));
+  const hash = createHash("sha256").update("gentle-profile-v2\0").update(inventory).update("\0" + signals.join("|"));
   const contents = manifests.map(file => {
     const text = readSmall(root, file);
     hash.update("\0" + file + "\0" + text);
@@ -88,14 +88,15 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
     [/^@nestjs\/core$/,"NestJS"], [/^FastAPI$/i,"FastAPI"], [/^Django$/i,"Django"]
   ] as const) if ([...packages].some(pkg => pattern.test(pkg))) profile.frameworks.push(label);
   if (/\.xaml$/im.test(inventory)) {
-    if (has("viewmodels")) arch.push("WPF MVVM");
+    if (has("viewmodel","viewmodels") || signals.includes("MVVM") || /(?:VM|ViewModel)\.cs$/m.test(inventory)) arch.push("WPF MVVM");
     else if (has("presenters")) arch.push("WPF MVP");
     else if (/\.xaml\.cs$/im.test(inventory)) arch.push("WPF Code-Behind");
   }
   if (has("repositories") || /Repository\.cs$/im.test(inventory)) arch.push(/UnitOfWork\.cs$/im.test(inventory) ? "Repository + UnitOfWork" : "Repository");
   if (signals.includes("CQRS") || profile.frameworks.includes("MediatR") || (has("commands","queries","features") && /Handler\.cs$/im.test(inventory))) arch.push("CQRS");
   if (signals.includes("DI") || /ServiceCollection|DependencyInjection|ServiceRegistration/i.test(inventory) || [...packages].some(p => p.startsWith("Microsoft.Extensions.DependencyInjection"))) arch.push(".NET DI");
-  if (has("controllers") && has("services")) arch.push(profile.frameworks.includes("NestJS") ? "NestJS Modules" : "MVC");
+  const webEvidence = profile.frameworks.includes("NestJS") || contents.some(m => /Microsoft\.NET\.Sdk\.Web|Microsoft\.AspNetCore\.Mvc/i.test(m.text));
+  if (has("controllers") && has("services") && (!/\.xaml$/im.test(inventory) || webEvidence)) arch.push(profile.frameworks.includes("NestJS") ? "NestJS Modules" : "MVC");
   if (["pages","widgets","features","entities","shared"].every(d => dirs.has(d))) arch.push("Feature-Sliced Design");
   if (has("components") && has("hooks","stores")) arch.push("Component UI");
   if (has("routers") && has("schemas") && profile.frameworks.includes("FastAPI")) arch.push("FastAPI routers");

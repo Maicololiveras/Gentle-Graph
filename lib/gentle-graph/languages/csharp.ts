@@ -68,6 +68,29 @@ export const csharp: LanguageAdapter = {
         add(name, "property", i, i, true, []);
       }
     });
+    const code = clean.join("\n");
+    const properties = new Map(result.symbols.filter(s => s.kind === "property").map(s => [s.name, s]));
+    // Method groups passed to Prism are references even without call parentheses.
+    const assignment = /\b(\w+)\s*=\s*new\s+(?:[\w.]+\.)?DelegateCommand(?:\s*<[^>]+>)?\s*\(\s*(?:this\.)?(\w+)\s*(?:,\s*(?:this\.)?(\w+)\s*)?\)/g;
+    for (const [, property, execute, canExecute] of code.matchAll(assignment)) {
+      const command = properties.get(property);
+      if (!command) continue;
+      for (const name of [execute, canExecute].filter(Boolean)) {
+        const candidates = result.symbols.filter(s => s.kind === "method" && s.name.endsWith("." + name));
+        const ref = candidates.length === 1 ? candidates[0].name : name;
+        if (!command.calls.includes(ref)) command.calls.push(ref);
+      }
+    }
+    if (/\.xaml\.cs$/i.test(file)) {
+      const types = new Set<string>();
+      for (const match of code.matchAll(/\bDataContext\s*=\s*new\s+(?:[\w.]+\.)?(\w+)\s*\(/g)) types.add(match[1]);
+      if (types.size) {
+        result.dataContexts = [...types];
+        const view = result.symbols.find(s => s.kind === "class" && s.name.toLowerCase() === path.basename(file, ".xaml.cs").toLowerCase())
+          ?? result.symbols.find(s => s.kind === "class");
+        if (view) view.calls.push(...types);
+      }
+    }
     return result;
   }
 };

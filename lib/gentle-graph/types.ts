@@ -26,6 +26,7 @@ export interface CodeSymbol {
 
 export interface FileNode {
   namespace?: string;
+  dataContexts?: string[];
   preview?: boolean;
   path: string;
   language: string;

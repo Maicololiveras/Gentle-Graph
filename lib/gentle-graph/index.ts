@@ -96,6 +96,7 @@ export function graphGuide(
   const signals = new Set<string>();
   for (const node of Object.values(index.files)) {
     if (node.language !== "csharp") continue;
+    if (node.dataContexts?.some(type => /(?:VM|ViewModel)$/.test(type))) signals.add("MVVM");
     for (const symbol of node.symbols) {
       if (/^Add(?:Scoped|Singleton|Transient)</.test(symbol.name)) signals.add("DI");
       if (symbol.contracts?.some(c => /^(?:IRequestHandler|INotificationHandler)$/.test(c))) signals.add("CQRS");

@@ -91,7 +91,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   if (fs.existsSync(filePath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as GraphIndex;
-      if (parsed && parsed.version === 2 && parsed.files) {
+      if (parsed && parsed.version === 3 && parsed.files) {
         memoryIndexCache.set(resolved, parsed);
         return parsed;
       }
@@ -101,7 +101,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   }
 
   const fresh: GraphIndex = {
-    version: 2,
+    version: 3,
     projectRoot: resolved,
     updatedAt: new Date(0).toISOString(),
     files: {}

@@ -6,6 +6,7 @@ export interface ParsedFile {
   exports: string[];
   symbols: CodeSymbol[];
   namespace?: string;
+  dataContexts?: string[];
 }
 
 export interface LanguageAdapter {
