@@ -210,10 +210,40 @@ function withFileLock<T>(file:string,work:()=>T):T{
 // into a single durable write before the host receives the result.
 const pendingWrites=new Map<string,{index?:GraphIndex;files:Set<string>}>();
 export function beginGraphWrites(root:string){pendingWrites.set(root,{files:new Set()});}
-export function flushGraphWrites(root:string){
+// The first JSON snapshot is a disposable cache. Publish it atomically in
+// the background for Windows sessions; ordinary writes and migrations keep
+// their existing transaction semantics.
+export function flushGraphWrites(root:string,background=false,onPublished?:(stamp:string)=>void):Promise<void>|undefined{
   const batch=pendingWrites.get(root);
   pendingWrites.delete(root);
-  if(batch?.index && batch.files.size)persistIndex(root,batch.index,batch.files);
+  if(!batch?.index || !batch.files.size)return;
+  const index=batch.index;
+  if(background && process.platform==="win32" && !jsonOnly(root) && stamps.get(root)==="absent" &&
+      Object.keys(index.files).length<=SQL_FILE_THRESHOLD){
+    const dir=path.join(root,GRAPH_DIR),file=path.join(dir,INDEX_FILE);
+    const tmp=file+"."+randomUUID()+".tmp";
+    index.projectRoot=root;
+    index.updatedAt=new Date().toISOString();
+    const bytes=JSON.stringify(index);
+    return (async()=>{
+      try{
+        await fs.promises.mkdir(dir,{recursive:true});
+        await fs.promises.writeFile(tmp,bytes,{flag:"wx"});
+        const published=jsonStamp(tmp);
+        await fs.promises.link(tmp,file);
+        if(!hasSql(root) && !fs.existsSync(path.join(dir,"index.lock"))){
+          memoryIndexCache.set(root,index);
+          stamps.set(root,published);
+          onPublished?.(published);
+          return;
+        }
+      }catch(error){
+        if(!["EEXIST","EPERM","ENOTSUP","EOPNOTSUPP","EXDEV","EACCES","ENOSYS"].includes(error.code))throw error;
+      }finally{await fs.promises.unlink(tmp).catch(e=>{if(e.code!=="ENOENT")throw e;});}
+      persistIndex(root,index,batch.files);
+    })();
+  }
+  persistIndex(root,index,batch.files);
 }
 export function saveGraphIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   const batch=pendingWrites.get(projectRoot);

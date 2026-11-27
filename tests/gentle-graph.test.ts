@@ -508,6 +508,10 @@ it("matches Git's tracked, untracked, staged and unstaged paths across index lay
   fs.writeFileSync(path.join(root,"f2.ts"),"export const dirty = true;");
   fs.writeFileSync(path.join(root,"pending.ts"),"export const pending = true;");
   const plain=gitInventory(root);
+  const {trackedGuideChanges,rootLayout}=await import("../lib/gentle-graph/clean-index.ts");
+  const changes=await trackedGuideChanges(root,rootLayout(root),file=>file.endsWith(".ts"));
+  assert.ok(changes.changed.includes("f2.ts"));
+  assert.ok(!changes.changed.includes("f1.ts")); // clean against the staged version
   const native=gitWorkspaceInventory(root);
   assert.deepEqual(native.files,plain.files);
   assert.deepEqual(new Set(native.dirty),new Set(gitDirtyFilesSync(root,plain.untracked)));
@@ -575,4 +579,22 @@ it("reports cold query telemetry and finds an untracked consumer in a fresh work
     assert.match(first.text,/extra\.test\.ts/);
     assert.deepEqual(await sessionQueryDetails(query),first);
   }finally{await closeQuerySessions();}
+  const persisted=JSON.parse(fs.readFileSync(path.join(root,".gentle-graph/index.json"),"utf8"));
+  assert.ok(persisted.files["extra.test.ts"]);
+  assert.ok(!fs.readdirSync(path.join(root,".gentle-graph")).some(file=>file.endsWith(".tmp")));
+});
+
+it("rechecks preview contents before publishing the selected guide files", async t => {
+  const {previewTrackedGuide} = await import("../lib/gentle-graph/query-guide.ts");
+  const {indexSpecificFiles} = await import("../lib/gentle-graph/indexer.ts");
+  const root = makeTempProject();
+  t.after(() => fs.rmSync(root, {recursive:true, force:true}));
+  const file = "src/auth.ts";
+  const paths = [file, ...Array.from({length:500}, (_, i) => "src/mod" + i + ".ts")];
+  const prepared = previewTrackedGuide(root, "auth", paths);
+  assert.ok(prepared?.[file].exports.includes("verifyToken"));
+  assert.equal(fs.existsSync(path.join(root, ".gentle-graph/index.json")), false);
+  fs.writeFileSync(path.join(root, file), "export function checkToken() {}\n");
+  const {index} = indexSpecificFiles(root, [file], {paths:new Set(paths), prepared, preview:true});
+  assert.deepEqual(index.files[file].exports, ["checkToken"]);
 });

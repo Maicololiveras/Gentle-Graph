@@ -2,10 +2,10 @@ import {existsSync} from "node:fs";
 import path from "node:path";
 import {typescript,workspaceCompiler} from "./languages/typescript.ts";
 import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
-import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
+import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,coldTrackedPaths,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
 import {syncGraphIndex,cachedScope} from "./indexer.ts";
-import {guideFromScope} from "./query-guide.ts";
+import {guideFromScope,previewTrackedGuide} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
 import {impactSteps} from "./query-impact.ts";
 import {runAsync} from "./query-shared.ts";
@@ -40,7 +40,13 @@ if (initial.compiler) {
 }
 
 const profileCache={};
+let previews:ReturnType<typeof previewTrackedGuide>;
+if(initial.kind==="guide" && process.platform==="win32"){
+  const tracked=coldTrackedPaths(initial.root);
+  if(tracked)previews=previewTrackedGuide(initial.root,initial.term,tracked);
+}
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
+let publishing:Promise<void>|undefined;
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
   let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root,JSON.stringify([q.kind,q.term])).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
@@ -49,14 +55,24 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const cacheKey=key+indexStamp(q.root);
   const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
+  if(publishing){
+    await publishing;
+    const committed=state?.results.get(key+indexStamp(q.root));
+    if(committed!==undefined)return committed;
+  }
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
+  let publication:ReturnType<typeof flushGraphWrites>;
   let text:string,partial=false,mode:string,indexed:number;
+  const timings=prepared && initial.profileStart!==undefined ? {scope:0,query:0,flush:0} : undefined;
+  const started=performance.now();
   beginGraphWrites(q.root);
   try {
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
+  if(timings)timings.scope=performance.now()-started;
   mode=scope.degraded?"degraded":scope.mode;
   if(q.kind==="guide"){
-    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache));
+    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache,previews));
+    previews=undefined;
   } else if(q.kind==="inspect"){
     text=formatInspect(await runAsync(q.root,inspectSteps(q.term,q,q.root,scope),state));
   } else {
@@ -68,16 +84,30 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   }
   indexed=Object.keys(scope.index.files).length;
   } finally {
-    try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+    if(timings)timings.query=performance.now()-started-timings.scope;
+    try{publication=flushGraphWrites(q.root,!!prepared && !!state && mode==="jit",stamp=>{
+      if(state && !partial && !degraded)state.results.set(key+stamp,{text,partial,mode,indexed});
+    });}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+  }
+  if(timings){
+    timings.flush=performance.now()-started-timings.scope-timings.query;
+    console.error(JSON.stringify({graphProfile:"worker",kind:q.kind,...timings}));
   }
   const reply={text,partial,mode,indexed};
   if(state && !partial && !degraded){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
     state.results.set(key+indexStamp(q.root),reply);
   }
+  if(publication){
+    publishing=publication.catch(error=>{
+      // An unavailable disk cache does not invalidate the computed answer.
+      if(initial.profileStart!==undefined)console.error("Graph cache publication failed",error.code);
+    }).finally(()=>{publishing=undefined;});
+  }
   return reply;
 }
-parentPort.on("message",async({query,prepared,inventoryReady,degraded}:{query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
+parentPort.on("message",async({query,prepared,inventoryReady,degraded,close}:{close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
+  if(close){await publishing;parentPort.postMessage({drained:true});return;}
   try {
     const received = profile ? performance.now() : 0;
     let result:Awaited<ReturnType<typeof handle>>;

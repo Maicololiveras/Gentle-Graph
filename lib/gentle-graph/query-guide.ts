@@ -6,8 +6,8 @@ import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arc
 import { graphInspect } from "./query-inspect.ts";
 import { getLookup,loadArchGuide,searchIndexedFiles,saveGraphIndex } from "./store.ts";
 import { isTestFile,resolveImport } from "./languages/registry.ts";
-import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
-import type { GuideRecommendation, CodeSymbol } from "./types.ts";
+import { indexSpecificFiles, listWorkspaceFiles, syncGraphIndex } from "./indexer.ts";
+import type { GuideRecommendation, CodeSymbol, GraphIndex, FileNode } from "./types.ts";
 /**
  * @gentle-domain graph
  * @gentle-reuse Punto de entrada principal para guiar al agente antes de crear archivos o abstracciones nuevas.
@@ -19,21 +19,10 @@ export function graphGuide(
   const resolved = path.resolve(options.projectRoot ?? process.cwd());
   return guideFromScope(intent,options,resolved,syncGraphIndex(resolved));
 }
-export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>,profileCache?:ArchitectureCache){
-  let index = scope.index;
-  let sqlGuide=false;
-  const words = tokenizeIntent(intent);
-  const rules = loadArchGuide(resolved);
-  if (scope.mode === "jit") {
+function rankGuidePaths(files:string[], words:string[], referenced:Set<string>, dirty:Set<string>, matches:Set<string>){
     const tokens = words.includes("configuration") ? [...words, "config"] : words;
-    const patterns = rules.patterns;
-    const referenced = new Set(patterns.flatMap(p => [p.entry.split("#")[0], ...p.files]));
-    const dirty = new Set(scope.dirty);
-    const hits=searchIndexedFiles(resolved,intent);
-    sqlGuide=hits!==undefined;
-    const matches=new Set(hits);
     const ranked: { file: string; score: number }[] = [];
-    for (const file of scope.knownFiles) {
+    for (const file of files) {
       const name = file.toLowerCase();
       let score = Number(matches.has(file))*4 + Number(referenced.size > 0 && referenced.has(file)) + Number(dirty.size > 0 && dirty.has(file));
       for (const token of tokens) if (name.includes(token)) score += 4;
@@ -42,8 +31,31 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       ranked.splice(pos < 0 ? ranked.length : pos, 0, { file, score });
       if (ranked.length > 15) ranked.pop();
     }
+    return ranked;
+}
+
+// Prepare lexical candidates while Git discovers edits. Only actual candidates
+// with matching content hashes are reused. Speculation never writes the index.
+export function previewTrackedGuide(root:string,intent:string,tracked:string[]){
+  const {knownFiles}=listWorkspaceFiles(root,{files:tracked,untracked:[]});
+  if(knownFiles.length<=500)return;
+  const ranked=rankGuidePaths(knownFiles,tokenizeIntent(intent),new Set(),new Set(),new Set());
+  const index:GraphIndex={projectRoot:root,version:1,updatedAt:"",files:Object.create(null)};
+  indexSpecificFiles(root,ranked.map(row=>row.file),{index,paths:new Set(knownFiles),preview:true,deferSave:new Set()});
+  return index.files;
+}
+export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>,profileCache?:ArchitectureCache, prepared?:Record<string,FileNode>){
+  let index = scope.index;
+  let sqlGuide=false;
+  const words = tokenizeIntent(intent);
+  const rules = loadArchGuide(resolved);
+  if (scope.mode === "jit") {
+    const referenced=new Set(rules.patterns.flatMap(p=>[p.entry.split("#")[0],...p.files]));
+    const hits=searchIndexedFiles(resolved,intent);
+    sqlGuide=hits!==undefined;
+    const ranked=rankGuidePaths(scope.knownFiles,words,referenced,new Set(scope.dirty),new Set(hits));
     const changed=new Set<string>();
-    const batch={index:scope.index,paths:scope.paths,preview:true,deferSave:changed};
+    const batch={index:scope.index,paths:scope.paths,preview:true,deferSave:changed,prepared};
     const candidates=ranked.map(row=>row.file);
     const singlePass=candidates.length<=3;
     indexSpecificFiles(resolved,candidates,singlePass ? {...batch,followImports:1} : batch);

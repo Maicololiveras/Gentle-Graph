@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { adapterFor, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
 import { patchLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
-import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
+import type { ArchGuideStore, FileNode, GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
 const profileIndex = process.env.GENTLE_GRAPH_PROFILE === "1" && workerData?.kind === "inspect";
@@ -172,7 +172,7 @@ function likelyMinified(content: string): boolean {
   return false;
 }
 
-export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { index?:GraphIndex; followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { index?:GraphIndex; prepared?:Record<string,FileNode>; followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
   const root = path.resolve(projectRoot);
   const index = options.index ?? loadGraphIndex(root);
   const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
@@ -198,7 +198,8 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     // Generated single-line JS occasionally ships without a .min.js suffix.
     if (/\.[cm]?jsx?$/i.test(file) && likelyMinified(content)) return;
     const parseStart = profileIndex ? performance.now() : 0;
-    const parsed = parseSourceFile(root, file, content, preview);
+    const prepared=preview ? options.prepared?.[file] : undefined;
+    const parsed = prepared?.sha256===hash ? prepared : parseSourceFile(root, file, content, preview);
     if (profileIndex) console.error(JSON.stringify({graphProfile:"parse",file,start:parseStart,end:performance.now()}));
     changed.add(file);
     stats.updated++;
