@@ -1,3 +1,7 @@
+import { java } from "./java.ts";
+import { php } from "./php.ts";
+import { ruby } from "./ruby.ts";
+import { svelte } from "./svelte.ts";
 import path from "node:path";
 import { typescript, lexicalTS } from "./typescript.ts";
 import { python } from "./python.ts";
@@ -7,7 +11,7 @@ import { csharp, xaml, generatedCSharp } from "./csharp.ts";
 import type { LanguageAdapter } from "./types.ts";
 
 const adapters = new Map<string, LanguageAdapter>();
-for (const adapter of [typescript, python, go, rust, csharp, xaml])
+for (const adapter of [typescript, python, go, rust, csharp, xaml, java, php, ruby, svelte])
   for (const ext of adapter.extensions) adapters.set(ext, adapter);
 
 export function adapterFor(file: string) {

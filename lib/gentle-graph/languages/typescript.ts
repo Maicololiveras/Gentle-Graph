@@ -60,6 +60,17 @@ export function lexicalTS(file: string, content: string) {
 export const typescript: LanguageAdapter = {
   id: "typescript", extensions, isTestFile: f => /\.(?:test|spec)\.[^/]+$|(?:^|\/)__tests__\//i.test(f),
   resolveRelativeImport(file, spec, files) {
+    if (spec.startsWith("$lib/")) {
+      let dir = path.posix.dirname(file);
+      while (true) {
+        const base = path.posix.join(dir,"src/lib",spec.slice(5));
+        const hit = [base,...extensions.map(e=>base+e),...extensions.map(e=>base+"/index"+e)].find(p=>files.has(p));
+        if (hit) return hit;
+        const parent = path.posix.dirname(dir);
+        if (parent===dir) return null;
+        dir=parent;
+      }
+    }
     if (!spec.startsWith(".")) return null;
     const base = path.posix.join(path.posix.dirname(file), spec);
     const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");

@@ -106,6 +106,7 @@ export function graphGuide(
   const guide = recommendPath(resolved, index, intent, options.limit ?? 5);
   const signals = new Set<string>();
   for (const node of Object.values(index.files)) {
+    if (node.language === "java" && node.symbols.some(s=>["RestController","Service","Repository"].includes(s.domainTag))) signals.add("Spring Boot");
     if (node.language !== "csharp") continue;
     if (node.dataContexts?.some(type => /(?:VM|ViewModel)$/.test(type))) signals.add("MVVM");
     for (const symbol of node.symbols) {
