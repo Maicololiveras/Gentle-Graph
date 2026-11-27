@@ -560,3 +560,19 @@ it("keeps the guide direct and hides secondary declarations only alongside codem
     assert.deepEqual(prepareLoadout({declared:[{name},{name:"codemode"}]}),{hiddenDeclarations:[name]});
   }
 });
+
+it("reports cold query telemetry and finds an untracked consumer in a fresh worktree",async t=>{
+  const root=largeRepo(t);
+  fs.writeFileSync(path.join(root,"tsconfig.json"),"{}");
+  fs.writeFileSync(path.join(root,"extra.test.ts"),'import { targetFn } from "./billing";\nexport function newConsumer(){return targetFn();}');
+  const {sessionQueryDetails,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  try {
+    const query={kind:"impact" as const,root,term:"targetFn"};
+    const first=await sessionQueryDetails(query);
+    assert.equal(first.mode,"jit");
+    assert.equal(first.partial,false);
+    assert.ok(first.indexed>0 && first.indexed<40);
+    assert.match(first.text,/extra\.test\.ts/);
+    assert.deepEqual(await sessionQueryDetails(query),first);
+  }finally{await closeQuerySessions();}
+});

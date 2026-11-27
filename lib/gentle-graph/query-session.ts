@@ -74,7 +74,7 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       finish();
       lane.worker = undefined;
       lane.stopping = worker.terminate();
-      resolve({text:checkpoint,mode:"jit",indexed:null,partial:true});
+      resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
     }, 1500) : undefined;
 
     function finish() {
@@ -97,7 +97,7 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"reply",kind:query.kind,cold,ms:performance.now()-started}));
       finish();
-      if (reply.timedOut) resolve({text:checkpoint,mode:"jit",indexed:null,partial:true});
+      if (reply.timedOut) resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
       else if (reply.error) reject(new Error(reply.error));
       else resolve(reply.result);
     }

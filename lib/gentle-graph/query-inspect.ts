@@ -2,7 +2,7 @@ import {GitScopeError} from "./git-scope.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile,resolveImport } from "./languages/registry.ts";
-import { indexSpecificFiles,syncGraphIndex,cachedScope } from "./indexer.ts";
+import { indexSpecificFiles,syncGraphIndex,syncSymbolIndex,cachedScope } from "./indexer.ts";
 import {bindingMatches,readBoundedSnippet,searchFrontier,runSync,type QuerySteps} from "./query-shared.ts";
 import type {CodeSymbol,InspectResult,SymbolRef} from "./types.ts";
 /**
@@ -11,7 +11,7 @@ import type {CodeSymbol,InspectResult,SymbolRef} from "./types.ts";
  */
 export function graphInspect(symbolQuery:string, options:{projectRoot?: string; depth?: number; maxMatches?: number}={}):InspectResult[] {
   const root=path.resolve(options.projectRoot??process.cwd());
-  try{return runSync(root,inspectSteps(symbolQuery,options,root,syncGraphIndex(root)));}
+  try{return runSync(root,inspectSteps(symbolQuery,options,root,syncSymbolIndex(root)));}
   catch(error){if(!(error instanceof GitScopeError))throw error;return runSync(root,inspectSteps(symbolQuery,options,root,cachedScope(root)));}
 }
 export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string; depth?: number; maxMatches?: number},resolved:string,scope:ReturnType<typeof syncGraphIndex>):QuerySteps<InspectResult[]> {

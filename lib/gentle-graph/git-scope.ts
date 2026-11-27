@@ -285,15 +285,20 @@ async function snapshotFromChanges(root:string,layout:GitLayout,files:string[],u
   }
 }
 
+export function coldTrackedPaths(root:string,layout=rootLayout(root)){
+  if(!layout || fs.existsSync(path.join(root,".gentle-graph","index.json")) ||
+      fs.existsSync(path.join(root,".gentle-graph","index.sqlite")))return;
+  return readTrackedIndexPaths(root,layout);
+}
+
 export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
   // Only a persisted graph needs a worktree-wide delta. Git's index supplies
   // tracked names for import resolution; enumerate just untracked paths in
   // parallel with the worktree search (including untracked callers and tests).
-  if(inspectTerm && layout && !fs.existsSync(path.join(root,".gentle-graph","index.json")) &&
-      !fs.existsSync(path.join(root,".gentle-graph","index.sqlite"))){
-    const tracked=readTrackedIndexPaths(root,layout);
+  if(inspectTerm && layout){
+    const tracked=coldTrackedPaths(root,layout);
     if(tracked){
       const name=inspectTerm.split("#").at(-1) ?? inspectTerm;
       const projected=impact && /^[a-z][a-zA-Z0-9_]*$/.test(name) && fs.existsSync(path.join(root,"tsconfig.json"));
