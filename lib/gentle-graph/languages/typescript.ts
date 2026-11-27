@@ -8,7 +8,7 @@ const extensions = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
 const language = (f: string) => /\.[cm]?tsx?$/i.test(f) ? "typescript" : "javascript";
 const host = createRequire(import.meta.url);
 const modules = new Map<string, any>();
-function compiler(root: string) {
+export function workspaceCompiler(root: string) {
   if (process.env.GENTLE_GRAPH_DISABLE_TOOLCHAINS === "1") return;
   const key = process.env.GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT === "1" ? root : "";
   if (!modules.has(key)) {
@@ -90,7 +90,7 @@ export const typescript: LanguageAdapter = {
     return resolveModulePath(base, files);
   },
   parse(root, file, content) {
-    const ts = compiler(root);
+    const ts = workspaceCompiler(root);
     if (!ts) return lexicalTS(file, content);
     const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, false);
     const { result, add } = sourceFile(file, content, language(file));

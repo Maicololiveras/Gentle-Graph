@@ -1,4 +1,7 @@
-import {parentPort} from "node:worker_threads";
+import {existsSync} from "node:fs";
+import path from "node:path";
+import {workspaceCompiler} from "./languages/typescript.ts";
+import {parentPort,workerData} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {syncGraphIndex} from "./indexer.ts";
 import {guideFromScope} from "./query-guide.ts";
@@ -7,6 +10,12 @@ import {impactSteps} from "./query-impact.ts";
 import {runAsync} from "./query-shared.ts";
 import {formatGuide,formatInspect,formatImpact} from "./format.ts";
 import type {Query} from "./query-session.ts";
+
+// Git discovers the first worktree scope concurrently on the parent thread.
+const initial = workerData as Query;
+if (initial.kind !== "guide" && existsSync(path.join(initial.root, "tsconfig.json"))) {
+  workspaceCompiler(initial.root);
+}
 
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
 async function handle(q:Query,prepared?:Prepared){

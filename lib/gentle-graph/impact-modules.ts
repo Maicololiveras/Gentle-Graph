@@ -2,6 +2,7 @@
 // modules become file edges, and only bound operations require a full symbol parse.
 import fs from "node:fs";
 import path from "node:path";
+import {stripCommentsAndStrings} from "./languages/lexer-core.ts";
 import {resolveImport} from "./languages/registry.ts";
 import {indexSpecificFiles, type syncGraphIndex} from "./indexer.ts";
 import {symbolNames,saveGraphIndex} from "./store.ts";
@@ -112,10 +113,30 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
   const operations=roots.map(symbol=>({symbol,hop:0}));
   // A single impacted exported operation can flow through a cycle of barrels.
   const propagated=new Set<string>();
-  function addCallers(file:string,names:Set<string>,hop:number){
+  const maskedLines=new Map<string,string[]>();
+  function usesBinding(symbol:CodeSymbol,names:Set<string>,namespace?:string){
+    let lines=maskedLines.get(symbol.file);
+    if(!lines){
+      lines=stripCommentsAndStrings(textByFile.get(symbol.file)??"", "typescript").split(/\r?\n/);
+      maskedLines.set(symbol.file,lines);
+    }
+    const body=lines.slice(symbol.line-1,symbol.endLine).join("\n");
+    for(const name of names){
+      const prefix=namespace?namespace.replace(/[$]/g,"\\$&")+"\\s*(?:\\?\\.|\\.)\\s*":"";
+      const re=new RegExp("(?:^|[^\\w$])("+prefix+name.replace(/[$]/g,"\\$&")+")\\s*(?:\\?\\.\\s*)?[<(]","g");
+      for(const match of body.matchAll(re)){
+        const before=body.slice(0,match.index+match[0].indexOf(match[1])).trimEnd();
+        if(!before.endsWith("."))return true;
+      }
+    }
+    return false;
+  }
+  function addCallers(file:string,names:Set<string>,hop:number,namedImport=false,namespace?:string){
     const node=scope.index.files[file];
     for(const symbol of node?.symbols??[]){
-      if(found.has(symbol.id) || !symbol.calls.some(c=>names.has(c)))continue;
+      const calls=namedImport ? symbol.importCallees??symbol.calls : symbol.calls;
+      if(found.has(symbol.id) || !calls.some(c=>names.has(c)))continue;
+      if((namespace || (namedImport && !symbol.importCallees)) && !usesBinding(symbol,names,namespace))continue;
       found.add(symbol.id);
       operations.push({symbol,hop});
       (hop===1?directCallers:transitiveCallers).push({file,name:symbol.name,line:symbol.line,hop});
@@ -182,7 +203,7 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
           parsed.add(edge.file);
           indexSpecificFiles(root,[edge.file],{paths:scope.paths,deadline,deferSave:changed});
         }
-        addCallers(edge.file,new Set([call]),hop+1);
+        addCallers(edge.file,new Set([call]),hop+1,!member && !!alias && !edge.namespace,member?undefined:edge.namespace);
       }
     }
   }

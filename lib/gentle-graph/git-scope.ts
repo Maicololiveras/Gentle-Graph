@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import {readTrackedIndexPaths} from "./git-index-paths.ts";
 import { isIndexableFile, sourceExtensions } from "./languages/registry.ts";
 
 const run = promisify(execFile);
@@ -14,7 +15,7 @@ const grepArgs = ["grep", "--untracked", "-I", "-z", "-l", "-F", "-f", "-", "--"
 const layoutArgs = ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "--show-prefix"];
 
 type GitLayout = { dir:string; common:string; prefix:string };
-type Inventory = { files:string[]; untracked:string[] };
+type Inventory = { files:string[]; untracked:string[]; dirty?:string[] };
 type GitFailure = { code?:string|number; status?:number; killed?:boolean; stderr?:string|Buffer };
 export class GitScopeError extends Error {
   readonly timedOut:boolean;
@@ -77,6 +78,20 @@ export function gitInventory(root:string):Inventory|null {
     if(rows[start]==="?")untracked.push(file);
   }
   return {files,untracked};
+}
+
+export function gitWorkspaceInventory(root: string): Inventory | null {
+  const tracked = readTrackedIndexPaths(root);
+  if (!tracked) return gitInventory(root);
+  const rows = gitPathsSync(root, ["status","--porcelain=v1","-z","--no-renames","--untracked-files=all","--","."]);
+  if (rows === null) return null;
+  const dirty: string[] = [], untracked: string[] = [];
+  for (const row of rows) {
+    const file = row.slice(3);
+    if (row.startsWith("?? ")) untracked.push(file);
+    if (isIndexableFile(file)) dirty.push(file);
+  }
+  return {files: untracked.length ? untracked.concat(tracked) : tracked, untracked, dirty};
 }
 
 export function gitListIndexableFilesSync(root:string){

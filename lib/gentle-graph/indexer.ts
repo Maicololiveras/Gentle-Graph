@@ -1,5 +1,5 @@
 import { isManifest } from "./arch-detector.ts";
-import { gitDirtyFilesSync, gitInventory } from "./git-scope.ts";
+import { gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -245,8 +245,10 @@ export function syncGraphIndex(projectRoot: string, options: boolean | { fullSyn
     return { index, ...previous.scope, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
   }
   const discoveredAt = Date.now();
-  const { knownFiles, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root,typeof options==="object" ? options.inventory : undefined);
-  const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? gitDirtyFilesSync(root, untracked)) : null;
+  const provided = typeof options === "object" ? options.inventory : undefined;
+  const inventory = provided === undefined ? gitWorkspaceInventory(root) : provided;
+  const { knownFiles, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root, inventory);
+  const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? inventory?.dirty ?? gitDirtyFilesSync(root, untracked)) : null;
   const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
   const guide = loadArchGuide(root);
   const patterns = new Set(guide.patterns.map(p => p.entry.split("#")[0]));

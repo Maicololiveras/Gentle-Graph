@@ -26,7 +26,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
   await lane.stopping;
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
-  const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url));
+  const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:query});
   return new Promise((resolve, reject) => {
     let checkpoint = "Partial impact (time budget reached)\n" + query.term;
     const timer = query.kind === "impact" ? setTimeout(() => {

@@ -436,7 +436,7 @@ it("prunes name-only matches while following aliases, barrels and private local 
   const put=(name:string,source:string)=>fs.writeFileSync(path.join(root,name),source);
   put("overlay.ts","export function loadToolOverlays() { return 1; }");
   put("barrel.ts",'export {loadToolOverlays as load} from "./overlay";');
-  put("consumer.ts",'import {load as read} from "./barrel";\nfunction get() { return read(); }\nexport function discoverAgentsIn(){ return get(); }');
+  put("consumer.ts",'import {load as read} from "./barrel";\nfunction get() { return read(); }\nexport function discoverAgentsIn(){ return get(); }\nexport function unrelated(){return other.read();}');
   put("second.ts",'import {discoverAgentsIn} from "./consumer";\nexport function main(){return discoverAgentsIn();}');
   for(let i=0;i<220;i++)put("f"+i+".ts",`// loadToolOverlays\nexport function unrelated${i}(){ return get(); }`);
   git(root,"add",".");
@@ -447,4 +447,37 @@ it("prunes name-only matches while following aliases, barrels and private local 
   assert.deepEqual(impact.transitiveCallers.map(s=>s.name),["discoverAgentsIn","main"]);
   assert.deepEqual([...impact.affectedFiles].sort(),["barrel.ts","consumer.ts","second.ts"]);
   assert.ok(Object.keys(loadGraphIndex(root).files).length<15);
+});
+
+it("matches Git's tracked, untracked, staged and unstaged paths across index layouts", async t => {
+  const {gitWorkspaceInventory,gitInventory,gitDirtyFilesSync} = await import("../lib/gentle-graph/git-scope.ts");
+  const {readTrackedIndexPaths} = await import("../lib/gentle-graph/git-index-paths.ts");
+  const root=largeRepo(t);
+  git(root,"update-index","--index-version=2");
+  fs.writeFileSync(path.join(root,"f1.ts"),"export const staged = true;");
+  git(root,"add","f1.ts");
+  fs.writeFileSync(path.join(root,"f2.ts"),"export const dirty = true;");
+  fs.writeFileSync(path.join(root,"pending.ts"),"export const pending = true;");
+  const plain=gitInventory(root);
+  const native=gitWorkspaceInventory(root);
+  assert.deepEqual(native.files,plain.files);
+  assert.deepEqual(new Set(native.dirty),new Set(gitDirtyFilesSync(root,plain.untracked)));
+  assert.equal(readTrackedIndexPaths(root)?.length,554);
+  fs.mkdirSync(path.join(root,"nested"));
+  assert.equal(readTrackedIndexPaths(path.join(root,"nested")),undefined);
+  const linked=fs.mkdtempSync(path.join(os.tmpdir(),"gg-native-linked-"));
+  git(root,"worktree","add","--detach",linked,"HEAD");
+  t.after(()=>fs.rmSync(linked,{recursive:true,force:true}));
+  assert.equal(readTrackedIndexPaths(linked),undefined);
+
+  git(root,"update-index","--index-version=4");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  assert.deepEqual(gitWorkspaceInventory(root).files,gitInventory(root).files);
+  git(root,"update-index","--index-version=2");
+  git(root,"update-index","--skip-worktree","f3.ts");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  git(root,"update-index","--no-skip-worktree","f3.ts");
+  git(root,"update-index","--split-index");
+  assert.equal(readTrackedIndexPaths(root),undefined);
+  assert.deepEqual(gitWorkspaceInventory(root).files,gitInventory(root).files);
 });
