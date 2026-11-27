@@ -13,7 +13,7 @@ import {execFileSync} from "node:child_process";
 import {gitPaths} from "../lib/gentle-graph/git-scope.ts";
 import type {FileNode} from "../lib/gentle-graph/types.ts";
 
-function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),"graph-store-"));t.after(()=>{clearMemoryCache(root);fs.rmSync(root,{recursive:true,force:true});});return root;}
+function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),"graph-store-"));t.after(()=>{clearMemoryCache(root);fs.rmSync(root,{recursive:true,force:true,maxRetries:8,retryDelay:150});});return root;}
 function node(file:string,name="apply"):FileNode{return {path:file,mtimeMs:1,sha256:"abcd",language:"typescript",imports:["./port"],exports:[name],
   symbols:[{id:file+"#"+name,name,file,kind:"method",line:5,endLine:7,exported:true,signature:"apply()",calls:["load"],
     contracts:["Port"],localCallees:[],importCallees:["load"],qualifiedCalls:["Store.load"],domainTag:"billing",reuseTag:"canonical",

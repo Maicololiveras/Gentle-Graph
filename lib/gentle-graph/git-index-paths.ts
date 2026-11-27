@@ -33,9 +33,9 @@ export function readTrackedIndexPaths(
     for (let i=0; i<count; i++) {
       if (offset + 62 >= end) return;
       const flags = bytes.readUInt16BE(offset + 60);
-      // Unmerged stages, extended flags (including skip-worktree) and
+      // Assume-unchanged entries, unmerged stages, extended flags and
       // sparse directory entries use the Git CLI path.
-      if ((flags & 0x7000) || (bytes.readUInt32BE(offset + 24) & 0xf000) === 0x4000) return;
+      if ((flags & 0xf000) || (bytes.readUInt32BE(offset + 24) & 0xf000) === 0x4000) return;
       const length = flags & 0xfff;
       if (length === 0 || length === 0xfff) return;
       const start = offset + 62, stop = start + length;
