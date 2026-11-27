@@ -57,6 +57,20 @@ export function lexicalTS(file: string, content: string) {
   return result;
 }
 
+function resolveModulePath(base: string, files: Set<string>) {
+  if (files.has(base)) return base;
+  const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");
+  for (const extension of extensions) {
+    const file = stem + extension;
+    if (files.has(file)) return file;
+  }
+  for (const extension of extensions) {
+    const file = base + "/index" + extension;
+    if (files.has(file)) return file;
+  }
+  return null;
+}
+
 export const typescript: LanguageAdapter = {
   id: "typescript", extensions, isTestFile: f => /\.(?:test|spec)\.[^/]+$|(?:^|\/)__tests__\//i.test(f),
   resolveRelativeImport(file, spec, files) {
@@ -64,7 +78,7 @@ export const typescript: LanguageAdapter = {
       let dir = path.posix.dirname(file);
       while (true) {
         const base = path.posix.join(dir,"src/lib",spec.slice(5));
-        const hit = [base,...extensions.map(e=>base+e),...extensions.map(e=>base+"/index"+e)].find(p=>files.has(p));
+        const hit = resolveModulePath(base, files);
         if (hit) return hit;
         const parent = path.posix.dirname(dir);
         if (parent===dir) return null;
@@ -73,13 +87,12 @@ export const typescript: LanguageAdapter = {
     }
     if (!spec.startsWith(".")) return null;
     const base = path.posix.join(path.posix.dirname(file), spec);
-    const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");
-    return [base, ...extensions.map(e => stem + e), ...extensions.map(e => base + "/index" + e)].find(f => files.has(f)) ?? null;
+    return resolveModulePath(base, files);
   },
   parse(root, file, content) {
     const ts = compiler(root);
     if (!ts) return lexicalTS(file, content);
-    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
+    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, false);
     const { result, add } = sourceFile(file, content, language(file));
     const locals=new Set<string>(), imports=new Set<string>();
     for(const declaration of sf.statements){

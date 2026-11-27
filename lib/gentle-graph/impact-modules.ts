@@ -50,14 +50,15 @@ function edgesOf(file:string,text:string,paths:Set<string>) {
 }
 
 type Scope=ReturnType<typeof syncGraphIndex>;
-export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:string[],deadline:number){
+export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:string[]|null,deadline:number){
   const candidates=new Map<string,Set<string>>();
-  let file=rows[0];
+  let file=rows?.[0];
   // With -z -o, Git emits path NUL match LF repeatedly. Keep embedded newlines in paths.
-  for(let i=1;file && i<rows.length;i++){
+  for(let i=1;file && i<rows!.length;i++){
     const sep=rows[i].indexOf("\n");
     if(sep<0)break;
-    const spec=rows[i].slice(1,sep-1);
+    const end=rows[i][sep-1]==="\r"?sep-1:sep;
+    const spec=rows[i].slice(1,end-1);
     if(scope.paths.has(file)){
       const dependency=resolveImport(file,spec,scope.paths);
       if(dependency){
@@ -67,6 +68,17 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
       }
     }
     file=rows[i].slice(sep+1);
+  }
+  if(rows===null){
+    for(const node of Object.values(scope.index.files)){
+      for(const spec of node.imports){
+        const dependency=resolveImport(node.path,spec,scope.paths);
+        if(!dependency)continue;
+        let files=candidates.get(dependency);
+        if(!files)candidates.set(dependency,files=new Set());
+        files.add(node.path);
+      }
+    }
   }
   const origins=new Set(roots.map(s=>s.file));
   const reachable=new Set(origins);
@@ -111,6 +123,28 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
   }
   const changed=new Set<string>();
   const parsed=new Set<string>();
+  const localExports=new Map<string,Map<string,string[]>>();
+  function exportedAs(file:string,local:string){
+    let names=localExports.get(file);
+    if(!names){
+      let text=textByFile.get(file);
+      if(text===undefined){
+        try{text=fs.readFileSync(path.join(root,file),"utf8");}catch{text="";}
+      }
+      names=new Map();
+      const add=(local:string,out:string)=>names.set(local,[...(names.get(local)??[]),out]);
+      const lists=/\bexport\s*\{([^}]*)\}(?!\s*from\b)|\bexport\s+default\s+([$\w]+)\s*(?:;|$)/gm;
+      for(const match of text.matchAll(lists)){
+        if(match[2]){add(match[2],"default");continue;}
+        for(const item of match[1].split(",")){
+          const [source,out]=item.trim().split(/\s+as\s+/);
+          if(source)add(source,out??source);
+        }
+      }
+      localExports.set(file,names);
+    }
+    return names.get(local)??[];
+  }
   const invocations=new Map<string,RegExp>();
   function hasInvocation(file:string,name:string){
     let re=invocations.get(name);
@@ -124,10 +158,11 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
   for(const {symbol,hop} of operations){
     if(performance.now()>=deadline)break;
     addCallers(symbol.file,new Set(symbolNames(symbol.name)),hop+1);
-    if(!symbol.exported)continue;
+
     const member=symbol.kind==="method"? symbol.name.split(".").at(-1):undefined;
     const name=member?symbol.name.split(".")[0]:symbol.name;
-    const forwards=[{file:symbol.file,name}];
+    const forwards=exportedAs(symbol.file,name).map(alias=>({file:symbol.file,name:alias}));
+    if(symbol.exported)forwards.push({file:symbol.file,name});
     if(/\bexport\s+default\b/.test(symbol.signature))forwards.push({file:symbol.file,name:"default"});
     for(const current of forwards){
       const key=JSON.stringify([current.file,current.name,member]);
@@ -140,6 +175,7 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
           continue;
         }
         if(!alias && !edge.namespace)continue;
+        if(alias)for(const out of exportedAs(edge.file,alias))forwards.push({file:edge.file,name:out});
         const call=member??alias??current.name;
         if(!hasInvocation(edge.file,call))continue;
         if(!parsed.has(edge.file)){
@@ -155,4 +191,20 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
   }
   return {origins,affectedFiles:[...reachable].filter(file=>!origins.has(file)),
     directCallers,transitiveCallers,contracts:[] as string[]};
+}
+
+// Git can return hundreds of call sites, comments or test strings for a unique
+// declaration. Identify likely JS declaration files before invoking a parser.
+export function possibleModuleDefinitions(root:string,hits:string[],symbol:string){
+  if(!/^[$\w]+$/.test(symbol))return [];
+  const name=symbol.replace(/[$]/g,"\\$&");
+  const declaration=new RegExp("\\b(?:function\\s*\\*?\\s*|(?:class|interface|type|const|var|let)\\s+)"+name+"(?![\\w$])");
+  return hits.filter(file=>{
+    if(!jsModule(file))return true;
+    try{
+      const abs=path.join(root,file);
+      const stat=fs.lstatSync(abs);
+      return stat.isFile() && stat.size<=256*1024 && declaration.test(fs.readFileSync(abs,"utf8"));
+    }catch{return false;}
+  });
 }

@@ -157,16 +157,15 @@ function currentJitScope(root: string, index: GraphIndex, cached: CachedScope): 
   return true;
 }
 
-// Keep the long-line threshold, including files with a license banner.
+// Every line of at least 8 KiB crosses a 4 KiB boundary. Probe only those
+// boundaries, preserving the threshold even after a multiline license banner.
 function likelyMinified(content: string): boolean {
   if (content.length < 8192) return false;
-  let start = 0;
-  while (start + 8192 <= content.length) {
-    const newline = content.indexOf("\n", start);
-    if (newline === -1) return true;
-    const end = content.charCodeAt(newline - 1) === 13 ? newline - 1 : newline;
+  for (let probe = 4095; probe < content.length; probe += 4096) {
+    const start = content.lastIndexOf("\n", probe) + 1;
+    const newline = content.indexOf("\n", probe + 1);
+    const end = newline < 0 ? content.length : newline - Number(content.charCodeAt(newline - 1) === 13);
     if (end - start >= 8192) return true;
-    start = newline + 1;
   }
   return false;
 }

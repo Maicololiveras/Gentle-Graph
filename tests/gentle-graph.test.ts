@@ -408,3 +408,43 @@ it("refreshes a worker result when a dirty source is edited again", async t=>{
     assert.match(await sessionQuery(q),/return 234/);
   } finally {await closeQuerySessions();}
 });
+
+it("reports a broken Git index without starting a full filesystem scan", t => {
+  const root = largeRepo(t, 1);
+  fs.writeFileSync(path.join(root, ".git", "index"), "broken Git index");
+  assert.throws(() => graphGuide("billing", {projectRoot: root}), /Git ls-files failed/);
+  assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
+});
+
+it("keeps the persisted snapshot when only a source timestamp changes", t => {
+  const root = makeTempProject();
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, {recursive: true, force: true}); });
+  const {index} = syncGraphIndex(root);
+  const disk = path.join(root, ".gentle-graph", "index.json");
+  const snapshot = fs.readFileSync(disk, "utf8");
+  const source = path.join(root, "src", "auth.ts");
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(source, future, future);
+  const {stats} = syncGraphIndex(root, {fullSync: true});
+  assert.equal(stats.updated, 0);
+  assert.equal(index.files["src/auth.ts"].mtimeMs, fs.statSync(source).mtimeMs);
+  assert.equal(fs.readFileSync(disk, "utf8"), snapshot);
+});
+
+it("prunes name-only matches while following aliases, barrels and private local callers", t=>{
+  const root=largeRepo(t);
+  const put=(name:string,source:string)=>fs.writeFileSync(path.join(root,name),source);
+  put("overlay.ts","export function loadToolOverlays() { return 1; }");
+  put("barrel.ts",'export {loadToolOverlays as load} from "./overlay";');
+  put("consumer.ts",'import {load as read} from "./barrel";\nfunction get() { return read(); }\nexport function discoverAgentsIn(){ return get(); }');
+  put("second.ts",'import {discoverAgentsIn} from "./consumer";\nexport function main(){return discoverAgentsIn();}');
+  for(let i=0;i<220;i++)put("f"+i+".ts",`// loadToolOverlays\nexport function unrelated${i}(){ return get(); }`);
+  git(root,"add",".");
+  git(root,"commit","-qm","module proof");
+  const impact=graphImpact("loadToolOverlays",{projectRoot:root});
+  assert.ok(!impact.partial);
+  assert.deepEqual(impact.directCallers.map(s=>s.name),["get"]);
+  assert.deepEqual(impact.transitiveCallers.map(s=>s.name),["discoverAgentsIn","main"]);
+  assert.deepEqual([...impact.affectedFiles].sort(),["barrel.ts","consumer.ts","second.ts"]);
+  assert.ok(Object.keys(loadGraphIndex(root).files).length<15);
+});

@@ -1,4 +1,4 @@
-import {moduleImpact,moduleProjection,jsModule} from "./impact-modules.ts";
+import {moduleImpact,moduleProjection,jsModule,possibleModuleDefinitions} from "./impact-modules.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
@@ -20,7 +20,34 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   const search = searchFrontier(resolved, scope,deadline);
   const isFile = scope.paths.has(target);
   if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { paths: scope.paths, followImports: 1 });
-  yield* search(isFile ? (index.files[target]?.symbols ?? []).map(s => s.name) : [target.split("#").at(-1) ?? target]);
+  const owner=target.includes("#")?target.slice(0,target.lastIndexOf("#")):undefined;
+  const term=target.split("#").at(-1)??target;
+  let initialHits:string[]|null=null;
+  if(scope.mode==="jit" && !isFile){
+    if(owner && scope.paths.has(owner)){
+      indexSpecificFiles(resolved,[owner],{paths:scope.paths,deadline});
+    } else {
+      initialHits=yield [term];
+      if(initialHits)indexSpecificFiles(resolved,possibleModuleDefinitions(resolved,initialHits,term),{paths:scope.paths,deadline});
+    }
+  }
+  function identifyRoots(){
+    const lookup=getLookup(index);
+    const exact=lookup.symbolById.get(target);
+    return exact?[exact]:isFile?index.files[target]?.symbols??[]:lookup.symbolByName.get(target)??[];
+  }
+  function moduleRoots(symbols:CodeSymbol[]){
+    return symbols.length>0 && symbols.every(s=>jsModule(s.file)
+      && (index.files[s.file].imports.length || index.files[s.file].exports.length));
+  }
+  let initial=identifyRoots();
+  let scoped=moduleRoots(initial);
+  if(!scoped){
+    // Other adapters expand aliases such as WPF's generated SaveCommand → Save.
+    yield* search(isFile ? (index.files[target]?.symbols??[]).map(s=>s.name) : [term]);
+    initial=identifyRoots();
+    scoped=moduleRoots(initial);
+  }
   const files = scope.knownFiles;
   const live = new Map<string, boolean>();
   function exists(file: string) {
@@ -77,15 +104,11 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
 
     return { origins, affectedFiles, directCallers, transitiveCallers, contracts: roots.flatMap(s => s.contracts ?? []) };
   }
-  const lookup=getLookup(index);
-  const identified=lookup.symbolById.get(target);
-  const roots=identified?[identified]:isFile?index.files[target]?.symbols??[]:lookup.symbolByName.get(target)??[];
-  const scoped=scope.mode==="jit" && roots.length && roots.every(s=>jsModule(s.file)
-    && (index.files[s.file].imports.length || index.files[s.file].exports.length));
-  const projected = scoped ? yield moduleProjection : null;
-  let closure = projected ? moduleImpact(resolved,scope,roots,projected,deadline) : traverse();
+  const projected = scoped && scope.mode==="jit" ? yield moduleProjection : null;
+  const modular=scoped && (scope.mode==="full" || projected!==null);
+  let closure = modular ? moduleImpact(resolved,scope,initial,projected,deadline) : traverse();
   if(checkpoint) checkpoint({target,...closure,partial:true,relatedTests:closure.affectedFiles.filter(isTestFile),affectedPatterns:[]});
-  while (!projected && scope.mode === "jit" && performance.now()<deadline) {
+  while (!modular && scope.mode === "jit" && performance.now()<deadline) {
     const terms = [...closure.directCallers, ...closure.transitiveCallers].map(c => c.name);
     terms.push(...closure.contracts);
     const paths: string[] = [];
