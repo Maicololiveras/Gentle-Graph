@@ -75,7 +75,7 @@ export function gitPathsSync(root:string,args:string[],_grep=false,input?:string
 }
 
 // Consistent diagnostic for gitFailure on localized hosts.
-function gitEnv(){return {...process.env,LC_ALL:"C"};}
+function gitEnv(){return {...process.env,LC_ALL:"C",GIT_OPTIONAL_LOCKS:"0"};}
 
 type GitResult={status:"ok"|"not_git"|"git_error";paths:string[];error?:GitScopeError};
 export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<GitResult>{
@@ -319,13 +319,11 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         grepImpactProjection(root,inspectTerm!,true),
         plainCheckoutText(root,tracked)
       ]).then(([result,plain])=>plain?result:null).catch(()=>null) : undefined;
-      const literal=simple && !combined ? Promise.all([
-        requireGitPaths(root,grepArgs.map(arg=>arg==="--untracked"?"--cached":arg),inspectTerm+"\n"),
-        plainCheckoutText(root,tracked)
-      ]).then(([rows,plain])=>plain?rows?.filter(isIndexableFile):null).catch(()=>null) : null;
+      // status reports staged, unstaged and untracked changes together. With
+      // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
-        inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)),
-        combined ? combined.then(result=>result?.hits) : literal,
+        gitSnapshot(root),
+        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root,inspectTerm!,Infinity,null).catch(()=>null) : null,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
