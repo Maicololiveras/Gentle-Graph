@@ -28,15 +28,15 @@ Cada worktree conserva su índice en `.gentle-graph/index.json` y pasa a SQLite 
 
 ## Rendimiento
 
-La extensión carga el índice en la primera consulta. Durante los dos segundos siguientes, las consultas del mismo worktree reutilizan el escaneo anterior. Al vencer esa ventana, el motor compara las fechas de modificación y calcula SHA-256 para los archivos que cambiaron. Omite archivos mayores de 256 KiB y fuentes con sufijos como `.min.js` y `.bundle.js`.
+La extensión carga el índice en la primera consulta. Durante dos segundos, las consultas del mismo worktree pueden reutilizar el inventario y las respuestas completas. Una ruta nueva o una edición en un archivo previamente limpio puede tardar hasta esa ventana en aparecer. Al vencer esa ventana, el motor compara las fechas de modificación y calcula SHA-256 para los archivos que cambiaron. Omite archivos mayores de 256 KiB y fuentes con sufijos como `.min.js` y `.bundle.js`.
 
-Los mapas en memoria permiten buscar directamente un símbolo por nombre o identificador y recuperar sus llamadores por nombre. El tiempo de recorrer dependencias y de preparar recomendaciones depende del número de resultados. La respuesta de la extensión tiene un máximo de 2400 caracteres para guía, 3000 para inspección y 2000 para impacto.
+Los mapas en memoria permiten buscar directamente un símbolo por nombre o identificador y recuperar sus llamadores por nombre. El tiempo de recorrer dependencias y de preparar recomendaciones depende del número de resultados. La respuesta de la extensión tiene un máximo de 1199 caracteres para guía sin fragmentos, 3000 para inspección y 2000 para impacto.
 
 ### Indexado progresivo en monorepos
 
-En un worktree Git con más de 500 rutas de código, la guía selecciona hasta 15 candidatos por intención y sigue sus imports relativos un salto. Las rutas modificadas y los patrones registrados se revisan aunque queden fuera de esos candidatos. Una guía en frío usa el parser ligero, y las consultas de referencias afinan las entradas con el parser habitual. En repos pequeños, o si Git no permite descubrir las rutas, se conserva la sincronización completa.
+En un worktree Git con más de 500 rutas de código, la guía selecciona hasta 15 candidatos por intención y sigue sus imports relativos un salto. Las rutas modificadas y los patrones registrados se revisan aunque queden fuera de esos candidatos. Una guía en frío usa el parser ligero, y las consultas de referencias afinan las entradas con el parser habitual. En repos pequeños y directorios sin Git se conserva la sincronización completa. Si Git falla durante una consulta en un repositorio, se puede reintentar.
 
-Las consultas de inspección e impacto buscan referencias literales en el árbol de trabajo y amplían los candidatos para seguir llamadores e importadores transitivos. Un símbolo frecuente puede requerir más de 80 candidatos. Los mapas permiten buscar un nombre en tiempo constante; enumerar todos sus dependientes cuesta al menos lo que cuesta recorrerlos. Las llamadas dinámicas y los nombres ambiguos conservan las limitaciones del parser.
+Para módulos TS/JS, el impacto sigue imports y reexportaciones relativos y usa las declaraciones para localizar los llamadores. En otros lenguajes puede ampliar la búsqueda por nombre. Si se agota el presupuesto de 1500 ms, la salida indica que el impacto es parcial. Las referencias dinámicas y los nombres ambiguos conservan las limitaciones del parser.
 
 Para medir una guía en frío en tu máquina:
 
@@ -49,7 +49,7 @@ El cronómetro incluye la consulta, el descubrimiento de rutas y la escritura de
 
 ### Lenguajes, WPF y guía arquitectónica
 
-La opción `includeSnippets: true` de `graph_guide` añade hasta tres símbolos de los módulos recomendados con código, llamadores, llamadas e implementaciones explícitas. La respuesta ampliada usa hasta 3000 caracteres. La guía habitual conserva el límite de 2400. Las referencias dependen de las declaraciones que reconoce el adaptador.
+La opción `includeSnippets: true` de `graph_guide` añade hasta tres símbolos de los módulos recomendados con código, llamadores, llamadas e implementaciones explícitas. La respuesta ampliada usa hasta 3000 caracteres. La guía habitual contiene hasta 1199 caracteres. Las referencias dependen de las declaraciones que reconoce el adaptador.
 
 | Ecosistema | Evidencia que puede encontrar |
 | --- | --- |
@@ -101,3 +101,5 @@ node scripts/replay-shell-pair.mjs "C:\repos\gentle-shell" "C:\ruta\al\pair-1"
 ```
 
 El replay usa el SHA de Gentle Shell guardado y el motor del clon actual de Gentle Graph. Extrae las consultas de lectura de la sesión B, las mide con índice nuevo por llamada y luego en secuencia, y guarda tiempos, caracteres y archivos indexados en `replay.json`. Después aplica cada parche a su propio worktree temporal y ejecuta la verificación reforzada. Las operaciones que ocurrieron entre consultas en la sesión original no se reproducen. Cada código de salida y su log permiten distinguir errores de tipos, pruebas fallidas e incidencias de entorno.
+
+[Guía de colaboradores y requisitos para abrir una PR](CONTRIBUTING.md)

@@ -29,7 +29,7 @@ export function symbolNames(name: string): string[] {
 export function getLookup(index: GraphIndex): GraphLookup {
   const cached = lookupCache.get(index);
   if (cached) return cached;
-  const symbols = Object.values(index.files).flatMap(file => file.symbols);
+  const symbols: CodeSymbol[] = [];
   const symbolById = new Map<string, CodeSymbol>();
   const symbolByName = new Map<string, CodeSymbol[]>();
   const implementationsByContract = new Map<string, CodeSymbol[]>();
@@ -39,17 +39,18 @@ export function getLookup(index: GraphIndex): GraphLookup {
     if (entries) entries.push(symbol);
     else map.set(key, [symbol]);
   }
-  for (const symbol of symbols) {
-    symbolById.set(symbol.id, symbol);
-    if (symbol.contracts?.length) {
-      for (const name of new Set(symbol.contracts ?? [])) append(implementationsByContract, name, symbol);
-    }
-    for (const name of symbolNames(symbol.name)) append(symbolByName, name, symbol);
-    for (const call of symbol.calls) append(callersByName, call, symbol);
-  }
   const paths = new Set(Object.keys(index.files));
   const importers = new Map<string, Set<string>>();
   for (const file of Object.values(index.files)) {
+    for (const symbol of file.symbols) {
+      symbols.push(symbol);
+      symbolById.set(symbol.id, symbol);
+      if (symbol.contracts?.length) {
+        for (const name of new Set(symbol.contracts)) append(implementationsByContract, name, symbol);
+      }
+      for (const name of symbolNames(symbol.name)) append(symbolByName, name, symbol);
+      for (const call of symbol.calls) append(callersByName, call, symbol);
+    }
     for (const source of file.imports) {
       const match = resolveImport(file.path, source, paths);
       if (!match) continue;
@@ -77,15 +78,25 @@ function ensureGraphDir(projectRoot: string): string {
 
 function writeAtomic(filePath: string, data: unknown): void {
   const tmp = `${filePath}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, path.basename(filePath) === GUIDE_FILE ? 2 : undefined), "utf8");
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, path.basename(filePath) === GUIDE_FILE ? 2 : undefined), "utf8");
+    fs.renameSync(tmp, filePath);
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* Preserve the original write failure. */ }
+    throw error;
+  }
 }
 
 export function clearMemoryCache(projectRoot?: string): void {
   if (projectRoot) {
-    memoryIndexCache.delete(path.resolve(projectRoot));
+    const root = path.resolve(projectRoot);
+    memoryIndexCache.delete(root);
+    const db = databases.get(root);
+    if (db) { databases.delete(root); db.close(); }
   } else {
     memoryIndexCache.clear();
+    for (const db of databases.values()) db.close();
+    databases.clear();
   }
 }
 
@@ -99,24 +110,32 @@ function openDatabase(file: string) {
   } catch (error) { db.close(); throw error; }
 }
 const sqliteCache = "index.sqlite";
+const databases = new Map<string, ReturnType<typeof openDatabase>>();
+
+function indexDatabase(root: string) {
+  let db = databases.get(root);
+  if (!db) {
+    db = openDatabase(path.join(root, GRAPH_DIR, sqliteCache));
+    databases.set(root, db);
+  }
+  return db;
+}
 function readSqlIndex(root: string): GraphIndex | undefined {
   const file = path.join(root, GRAPH_DIR, sqliteCache);
   if (!fs.existsSync(file)) return;
-  const db = openDatabase(file);
-  try {
-    const meta = db.prepare("SELECT version, updatedAt FROM metadata").get();
-    if (meta?.version !== 7) return;
-    const files: GraphIndex["files"] = {};
-    for (const row of db.prepare("SELECT path, data FROM files").iterate())
-      files[String(row.path)] = JSON.parse(String(row.data));
-    return { version: 7, projectRoot: root, updatedAt: String(meta.updatedAt), files };
-  } finally { db.close(); }
+  const db = indexDatabase(root);
+  const meta = db.prepare("SELECT version, updatedAt FROM metadata").get();
+  if (meta?.version !== 8) return;
+  const files: GraphIndex["files"] = {};
+  for (const row of db.prepare("SELECT path, data FROM files").iterate())
+    files[String(row.path)] = JSON.parse(String(row.data));
+  return { version: 8, projectRoot: root, updatedAt: String(meta.updatedAt), files };
 }
-function writeSqlIndex(dir: string, index: GraphIndex, changed: Set<string>, rebuild: boolean) {
-  const db = openDatabase(path.join(dir, sqliteCache));
+function writeSqlIndex(root: string, index: GraphIndex, changed: Set<string>, rebuild: boolean) {
+  const db = indexDatabase(root);
   try {
     db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS metadata(version INTEGER, updatedAt TEXT); CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, data TEXT)");
-    const initialized = !rebuild && db.prepare("SELECT version FROM metadata").get()?.version === 7;
+    const initialized = !rebuild && db.prepare("SELECT version FROM metadata").get()?.version === 8;
     if (!initialized) db.exec("DELETE FROM files");
     const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?)");
     const remove = db.prepare("DELETE FROM files WHERE path=?");
@@ -125,9 +144,12 @@ function writeSqlIndex(dir: string, index: GraphIndex, changed: Set<string>, reb
       else remove.run(key);
     }
     db.exec("DELETE FROM metadata");
-    db.prepare("INSERT INTO metadata VALUES(7, ?)").run(index.updatedAt);
+    db.prepare("INSERT INTO metadata VALUES(8, ?)").run(index.updatedAt);
     db.exec("COMMIT");
-  } finally { db.close(); }
+  } catch (error) {
+    if (db.isTransaction) db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function loadGraphIndex(projectRoot: string): GraphIndex {
@@ -145,7 +167,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   if (fs.existsSync(filePath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as GraphIndex;
-      if (parsed && parsed.version === 7 && parsed.files) {
+      if (parsed && parsed.version === 8 && parsed.files) {
         memoryIndexCache.set(resolved, parsed);
         return parsed;
       }
@@ -155,7 +177,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   }
 
   const fresh: GraphIndex = {
-    version: 7,
+    version: 8,
     projectRoot: resolved,
     updatedAt: new Date(0).toISOString(),
     files: {}
@@ -173,7 +195,7 @@ export function saveGraphIndex(projectRoot: string, index: GraphIndex, changed: 
   if (Object.keys(index.files).length > 2000 || fs.existsSync(path.join(dir, sqliteCache))) {
     try {
       // A JSON snapshot takes precedence after a previous fallback. Reimport it in full.
-      writeSqlIndex(dir, index, changed, fs.existsSync(json));
+      writeSqlIndex(resolved, index, changed, fs.existsSync(json));
       fs.rmSync(json, { force: true });
       memoryIndexCache.set(resolved, index);
       return;

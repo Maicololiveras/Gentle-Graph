@@ -1,0 +1,39 @@
+name: Gentle Graph CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install host types and compiler for CI
+        run: npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund typescript@5.9.3 @types/node@24.13.3 typebox@1.1.38 @earendil-works/pi-coding-agent@1.6.0
+      - run: pnpm typecheck
+      - run: pnpm test
+      - uses: actions/checkout@v4
+        with:
+          repository: Gentleman-Programming/gentle-shell
+          ref: c9b59eab57a56224c76b99e1caa9bb94cb113dc8
+          path: benchmark-host
+      - id: jit
+        continue-on-error: true
+        run: node scripts/bench-jit.mjs 30000 --check
+      - run: node scripts/bench-queries.mjs benchmark-host
+        env:
+          GENTLE_GRAPH_PROFILE: "1"
+      - if: always() && steps.jit.outcome == 'failure'
+        run: node -e "process.exit(1)"

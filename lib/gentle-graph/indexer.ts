@@ -1,13 +1,15 @@
 import { isManifest } from "./arch-detector.ts";
-import { gitDirtyFiles, gitInventory } from "./git-scope.ts";
+import { gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
+import {workerData} from "node:worker_threads";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
+import { adapterFor, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
 import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
-import type { GraphIndex, SyncStats } from "./types.ts";
+import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
+const profileIndex = process.env.GENTLE_GRAPH_PROFILE === "1" && workerData?.kind === "inspect";
 const MAX_SOURCE_BYTES = 256 * 1024;
 
 const IGNORED_DIRS = new Set([
@@ -52,8 +54,7 @@ function sha256(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex");
 }
 
-function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): number {
-  const guide = loadArchGuide(projectRoot);
+function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex, guide: ArchGuideStore): number {
   if (guide.patterns.length === 0) return 0;
 
   const revisions = new Map<string, string>();
@@ -104,33 +105,75 @@ function eligible(file: string): boolean {
 
 const isContract = (file: string) => /(?:^|\/)contracts\/.*\.(?:md|txt|ya?ml|json)$/i.test(file);
 
-export function listWorkspaceFiles(root: string) {
-  const tracked = gitInventory(root);
+export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
   const knownFiles = tracked?.files ?? [];
   if (!tracked) walkSourceFiles(root, root, knownFiles);
-  const files: string[] = [], manifests: string[] = [], contracts: string[] = [];
+  const files: string[] = [], manifests: string[] = [], contracts: string[] = [], tests: string[] = [];
+  const folders = new Set<string>([""]);
   // Git emits adjacent files from the same directory. Reuse its exclusion decision.
-  let folder = "", skipFolder = false;
+  let folder = "", skipFolder = false, contractFolder = false;
+  let lastExtension = "", adapter: ReturnType<typeof adapterFor>, isCSharp = false;
   for (const file of knownFiles) {
     const slash = file.lastIndexOf("/");
     if (slash + 1 !== folder.length || !file.startsWith(folder)) {
-      folder = file.slice(0,slash+1);
+      folder = file.slice(0, slash + 1);
       skipFolder = !eligible(folder);
+      contractFolder = /(?:^|\/)contracts\//.test(folder.toLowerCase());
+      if (!skipFolder) folders.add(folder);
     }
-    if (skipFolder || /\.(min|bundle)\.[cm]?[jt]sx?$/i.test(file)) continue;
-    if (isIndexableFile(file)) {
+    if (skipFolder) continue;
+    const dot = file.lastIndexOf(".");
+    const extension = dot > slash + 1 ? file.slice(dot) : "";
+    // Resolve the language once per extension run. Generated C# exclusions
+    // depend on the whole filename and must still go through the registry.
+    if (extension !== lastExtension) {
+      lastExtension = extension;
+      adapter = extension ? adapterFor("source" + extension) : undefined;
+      isCSharp = extension.toLowerCase() === ".cs";
+    }
+    if (adapter) {
+      if (file.indexOf(".", slash + 1) !== dot && /\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(file)) continue;
+      if (isCSharp && !isIndexableFile(file)) continue;
       files.push(file);
+      if (adapter.isTestFile(file)) tests.push(file);
       if (file.endsWith("build.gradle.kts") || file.endsWith("Package.swift")) manifests.push(file);
     } else if (isManifest(file)) manifests.push(file);
-    if (isContract(file)) contracts.push(file);
+    if (contractFolder && isContract(file)) contracts.push(file);
   }
-  return { knownFiles: files, manifests, contracts, git: tracked !== null, untracked: tracked?.untracked };
+  return { knownFiles: files, tests, manifests, contracts, folders, git: tracked !== null, untracked: tracked?.untracked };
 }
 
-type Scope = { manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
-const scopes = new WeakMap<GraphIndex, { scope: Scope; time: number; stalePatterns: number }>();
+type Scope = { tests: string[]; manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
+type CachedScope = { scope: Scope; time: number; discoveredAt: number; folders: Set<string>; stalePatterns: number };
+const scopes = new WeakMap<GraphIndex, CachedScope>();
 
-export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean } = {}) {
+function currentJitScope(root: string, index: GraphIndex, cached: CachedScope): boolean {
+  // A path can be created, renamed or removed within the TTL. Directory mtimes
+  // let synchronous consumers notice these changes without starting Git.
+  for (const folder of cached.folders) {
+    const stat = fs.statSync(path.join(root, folder), {throwIfNoEntry:false});
+    if (!stat || stat.mtimeMs >= cached.discoveredAt) return false;
+  }
+  for (const file of Object.values(index.files)) {
+    if (fs.lstatSync(path.join(root,file.path), {throwIfNoEntry:false})?.mtimeMs !== file.mtimeMs) return false;
+  }
+  return true;
+}
+
+// Every line of at least 8 KiB crosses a 4 KiB boundary. Probe only those
+// boundaries, preserving the threshold even after a multiline license banner.
+function likelyMinified(content: string): boolean {
+  if (content.length < 8192) return false;
+  for (let probe = 4095; probe < content.length; probe += 4096) {
+    const start = content.lastIndexOf("\n", probe) + 1;
+    const newline = content.indexOf("\n", probe + 1);
+    const end = newline < 0 ? content.length : newline - Number(content.charCodeAt(newline - 1) === 13);
+    if (end - start >= 8192) return true;
+  }
+  return false;
+}
+
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
   const root = path.resolve(projectRoot);
   const index = loadGraphIndex(root);
   const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
@@ -144,26 +187,29 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     const abs = path.join(root, file);
     const stat = fs.lstatSync(abs, { throwIfNoEntry: false });
     if (!stat?.isFile() || stat.size > MAX_SOURCE_BYTES) return;
-    const reusable = cached && (!cached.preview || options.preview);
+    const preview = options.preview && !options.fullParseFiles?.has(file);
+    const reusable = cached && (!cached.preview || preview);
     if (reusable && cached.mtimeMs === stat.mtimeMs) return cached;
     const content = fs.readFileSync(abs, "utf8");
     const hash = sha256(content);
     if (reusable && cached.sha256 === hash) {
       cached.mtimeMs = stat.mtimeMs;
-      changed.add(file);
       return cached;
     }
     // Generated single-line JS occasionally ships without a .min.js suffix.
-    if (/\.[cm]?jsx?$/i.test(file) && content.length >= 8192 && content.split(/\r?\n/).some(line => line.length >= 8192)) return;
-    const parsed = parseSourceFile(root, file, content, options.preview);
+    if (/\.[cm]?jsx?$/i.test(file) && likelyMinified(content)) return;
+    const parseStart = profileIndex ? performance.now() : 0;
+    const parsed = parseSourceFile(root, file, content, preview);
+    if (profileIndex) console.error(JSON.stringify({graphProfile:"parse",file,start:parseStart,end:performance.now()}));
     changed.add(file);
     stats.updated++;
-    return index.files[file] = { ...parsed, ...(options.preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
+    return index.files[file] = { ...parsed, ...(preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
   }
   let frontier = new Set(files);
   for (let depth = 0; frontier.size; depth++) {
     const next = new Set<string>();
     for (const file of frontier) {
+      if(options.deadline!==undefined && performance.now()>=options.deadline) break;
       if (visited.has(file)) continue;
       visited.add(file);
       stats.scanned++;
@@ -184,29 +230,38 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     frontier = next;
   }
   if (stats.updated || stats.removed) invalidateLookup(index);
-  if (changed.size) {
+  if (options.deferSave) {
+    for (const file of changed) options.deferSave.add(file);
+  } else if (changed.size) {
+    const saveStart = profileIndex ? performance.now() : 0;
     try { saveGraphIndex(root, index, changed); } catch { /* Keep read-only worktrees usable. */ }
+    if (profileIndex) console.error(JSON.stringify({graphProfile:"save",start:saveStart,end:performance.now()}));
   }
   stats.durationMs = performance.now() - start;
   return { index, stats };
 }
 
-export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean } = {}) {
+export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean; inventory?: ReturnType<typeof gitInventory>; dirty?: string[]; refresh?: boolean } = {}) {
   const root = path.resolve(projectRoot);
   const index = loadGraphIndex(root);
   const previous = scopes.get(index);
   const force = options === true || (typeof options === "object" && options.fullSync);
-  if (!force && previous?.scope.mode === "full" && previous.scope.knownFiles.length <= 500 && performance.now() - previous.time < SYNC_TTL_MS) {
+  const refresh = typeof options === "object" && (options.refresh || options.inventory !== undefined || options.dirty !== undefined);
+  if (!refresh && !force && previous && performance.now() - previous.time < SYNC_TTL_MS &&
+      (previous.scope.mode === "jit" ? currentJitScope(root, index, previous) : previous.scope.knownFiles.length <= 500)) {
     return { index, ...previous.scope, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
   }
-  const { knownFiles, git, contracts, manifests, untracked } = listWorkspaceFiles(root);
-  const dirty = git && !force && knownFiles.length > 500 ? gitDirtyFiles(root, untracked) : null;
-  const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
-  const patterns = loadArchGuide(root).patterns.map(p => p.entry.split("#")[0]);
+  const discoveredAt = Date.now();
+  const provided = typeof options === "object" ? options.inventory : undefined;
+  const inventory = provided === undefined ? (force ? gitInventory(root) : gitWorkspaceInventory(root)) : provided;
+  const { knownFiles, tests, git, contracts, manifests, folders, untracked } = listWorkspaceFiles(root, inventory);
+  const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? inventory?.dirty ?? gitDirtyFilesSync(root, untracked)) : null;
+  const scope: Scope = { knownFiles, tests, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
+  const guide = loadArchGuide(root);
+  const patterns = new Set(guide.patterns.map(p => p.entry.split("#")[0]));
   const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];
-  const { stats } = indexSpecificFiles(root, files, { paths: scope.paths, preview: scope.mode === "jit" });
-  if (patterns.length) indexSpecificFiles(root, patterns, { paths: scope.paths });
-  stats.stalePatterns = reconcilePatternsWithIndex(root, index);
-  scopes.set(index, { scope, time: performance.now(), stalePatterns: stats.stalePatterns });
+  const { stats } = indexSpecificFiles(root, files, { paths: scope.paths, preview: scope.mode === "jit", fullParseFiles: patterns });
+  stats.stalePatterns = reconcilePatternsWithIndex(root, index, guide);
+  scopes.set(index, { scope, discoveredAt, folders, time: performance.now(), stalePatterns: stats.stalePatterns });
   return { index, ...scope, stats };
 }
