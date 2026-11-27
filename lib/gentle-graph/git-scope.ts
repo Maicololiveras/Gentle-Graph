@@ -204,6 +204,25 @@ async function metadata(files:string[]):Promise<string>{
   return hash.digest("hex");
 }
 
+async function snapshotFromChanges(root:string,layout:GitLayout,files:string[],untracked:string[],staged:string[],changedOnDisk:string[]):Promise<[GitSnapshot,Inventory]|undefined>{
+  const markers=controlFiles(root,layout);
+  const head=fs.readFileSync(markers[0],"utf8").trimEnd();
+  let oid=head;
+  if(head.startsWith("ref: ")){
+    try{oid=fs.readFileSync(markers.at(-1),"utf8").trimEnd();}catch{oid="";}
+  }
+  if(/^[0-9a-f]{40}$/.test(oid)){
+    const changed=[...new Set([...untracked,...staged,...changedOnDisk])].filter(f=>!f.startsWith(".gentle-graph/") || f===".gentle-graph/guide.json");
+    markers.push(...changed.map(f=>path.join(root,f)));
+    const stamp=await metadata(markers);
+    const key=createHash("sha256").update(oid).update(JSON.stringify(changed)).update(stamp).digest("hex");
+    const inventory={files:[...files,...untracked],untracked};
+    const state:GitSnapshot={root,key,dirty:changed.filter(isIndexableFile),inventory,greps:new Map(),results:new Map(),checkedAt:Date.now(),markers,stamp};
+    layouts.set(root,layout);
+    return [state,inventory];
+  }
+}
+
 export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
@@ -212,6 +231,20 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
   if(layout && process.platform==="win32"){
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
+      if(!inspectTerm && !impact){
+        // Independent Git plumbing reads can overlap the NTFS directory scan
+        // with tracked-file verification. Preserve staged and unstaged paths
+        // separately, including a staged edit undone only in the worktree.
+        const [untracked,staged,changed]=await Promise.all([
+          requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."]),
+          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."])
+        ]);
+        if(untracked && staged && changed){
+          const prepared=await snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
+          if(prepared)return prepared;
+        }
+      }
       // A single unqualified lowercase-initial name is the first literal of
       // inspect. Overlap its read-only search with status on large worktrees.
       // Dirty snapshots use the normal search after status has settled.
@@ -245,22 +278,8 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       const {files,suspects}=verified;
       const changedOnDisk=suspects.length ? await requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
       if(changedOnDisk===null)return [null,null];
-      const markers=controlFiles(root,layout);
-      const head=fs.readFileSync(markers[0],"utf8").trimEnd();
-      let oid=head;
-      if(head.startsWith("ref: ")){
-        try{oid=fs.readFileSync(markers.at(-1),"utf8").trimEnd();}catch{oid="";}
-      }
-      if(/^[0-9a-f]{40}$/.test(oid)){
-        const changed=[...new Set([...untracked,...staged,...changedOnDisk])].filter(f=>!f.startsWith(".gentle-graph/") || f===".gentle-graph/guide.json");
-        markers.push(...changed.map(f=>path.join(root,f)));
-        const stamp=await metadata(markers);
-        const key=createHash("sha256").update(oid).update(JSON.stringify(changed)).update(stamp).digest("hex");
-        const inventory={files:[...files,...untracked],untracked};
-        const state:GitSnapshot={root,key,dirty:changed.filter(isIndexableFile),inventory,greps:new Map(),results:new Map(),checkedAt:Date.now(),markers,stamp};
-        layouts.set(root,layout);
-        return [state,inventory];
-      }
+      const prepared=await snapshotFromChanges(root,layout,files,untracked,staged,changedOnDisk);
+      if(prepared)return prepared;
     }
   }
   return Promise.all([gitSnapshot(root),gitSessionInventory(root,null)]);
