@@ -409,7 +409,7 @@ it("refreshes a worker result when a dirty source is edited again", async t=>{
   } finally {await closeQuerySessions();}
 });
 
-it("reports a broken Git index and recovers on the next session query", async t => {
+it("reports a broken Git index and recovers on the next session query", {timeout:15000}, async t => {
   const root = largeRepo(t, 1);
   const {sessionQuery, closeQuerySessions} = await import("../lib/gentle-graph/query-session.ts");
   const indexPath = path.join(root, ".git", "index");

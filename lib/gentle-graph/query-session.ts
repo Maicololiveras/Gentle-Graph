@@ -46,10 +46,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
 
     function error(err: Error) {
       finish();
-      if (lane.worker === worker) {
-        lane.worker = undefined;
-        lane.stopping = worker.terminate();
-      }
+      if (lane.worker === worker) lane.worker = undefined;
       reject(err);
     }
 
@@ -72,7 +69,14 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
       const prepared = cold ? await prepareColdScope(query.root) : undefined;
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
     }
-    send().catch(error);
+    send().catch(err => {
+      // Git preparation may fail while the new worker is still booting. Keep
+      // the healthy worker in its lane for a retry or normal session shutdown.
+      if (lane.worker === worker) {
+        finish();
+        reject(err);
+      }
+    });
   });
 }
 
