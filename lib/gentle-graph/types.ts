@@ -29,6 +29,7 @@ export interface CodeSymbol {
   signature: string;
   calls: string[];
   contracts?: string[];
+  implementationName?: string;
   reuseTag?: string;
   domainTag?: string;
   boundaryTag?: string;
@@ -118,6 +119,7 @@ export interface ModuleRecommendation {
 }
 
 export interface GuideRecommendation {
+  subgraph?: InspectResult[];
   architecture?: string;
   boundaries?: string[];
   slice?: string;

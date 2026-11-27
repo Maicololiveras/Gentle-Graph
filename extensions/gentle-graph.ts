@@ -26,6 +26,7 @@ function asText(value: string) {
 
 const GuideParams = Type.Object({
 	intent: Type.String(),
+	includeSnippets: Type.Optional(Type.Boolean()),
 	projectRoot: Type.Optional(Type.String()),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
 });
@@ -56,12 +57,13 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 		description: "Find reusable modules, patterns and contracts.",
 		parameters: GuideParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { intent, projectRoot, limit } = params as {
+			const { intent, projectRoot, limit, includeSnippets } = params as {
 				intent: string;
 				projectRoot?: string;
 				limit?: number;
+				includeSnippets?: boolean;
 			};
-			return asText(formatGuide(graphGuide(intent, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), limit })));
+			return asText(formatGuide(graphGuide(intent, { projectRoot: resolveRoot(projectRoot, ctx?.cwd), limit, includeSnippets })));
 		},
 	});
 
