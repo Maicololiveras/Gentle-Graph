@@ -25,11 +25,16 @@ interface Edge {
 // The clause may span lines. Side-effect imports contribute a file edge without a symbol.
 const declarations = /\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|\b(import|export)\s*(?:type\s+)?((?:(?:[$\w]+\s*,?\s*)?(?:\{[^}]*\}|\*\s*(?:as\s+[$\w]+)?)?)\s*from\s*)?["']([^"'\r\n]+)["']/g;
 
-function edgesOf(file:string,text:string,paths:Set<string>) {
+function edgesOf(file:string,text:string,paths:Set<string>,projected?:Map<string,string>) {
   const edges:Edge[]=[];
+  // Test modules often have a short import header and long assertion bodies.
+  // No declaration can begin past the final literal keyword in the source.
+  const lastKeyword=Math.max(text.lastIndexOf("import"),text.lastIndexOf("export"));
+  if(lastKeyword<0)return edges;
   for(const match of text.matchAll(declarations)){
+    if(match.index>lastKeyword)break;
     if(!match[1])continue;
-    const dependency=resolveImport(file,match[3],paths);
+    const dependency=projected?.get(match[3]) ?? resolveImport(file,match[3],paths);
     if(!dependency)continue;
     const clause=(match[2]??"").replace(/\s*from\s*$/,"").replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g,"").trim();
     const names=new Map<string,string>();
@@ -81,6 +86,7 @@ export async function readModuleBatch(root:string, files:string[], deadline:numb
 
 export function* moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:string[]|null,deadline:number){
   const candidates=new Map<string,Set<string>>();
+  const resolvedSpecs=new Map<string,Map<string,string>>();
   let file=rows?.[0];
   // With -z -o, Git emits path NUL match LF repeatedly. Keep embedded newlines in paths.
   for(let i=1;file && i<rows!.length;i++){
@@ -91,6 +97,9 @@ export function* moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:st
     if(scope.paths.has(file)){
       const dependency=resolveImport(file,spec,scope.paths);
       if(dependency){
+        let specs=resolvedSpecs.get(file);
+        if(!specs)resolvedSpecs.set(file,specs=new Map());
+        specs.set(spec,dependency);
         let files=candidates.get(dependency);
         if(!files)candidates.set(dependency,files=new Set());
         files.add(file);
@@ -130,7 +139,7 @@ export function* moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:st
       const text=texts[i];
       if(!text)continue;
       textByFile.set(file,text);
-      for(const edge of edgesOf(file,text,scope.paths)){
+      for(const edge of edgesOf(file,text,scope.paths,resolvedSpecs.get(file))){
         let edges=inbound.get(edge.dependency);
         if(!edges)inbound.set(edge.dependency,edges=[]);
         edges.push(edge);
