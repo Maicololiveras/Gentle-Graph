@@ -1,6 +1,6 @@
 import {existingBackend} from "./sqlite-backend.ts";
 import { isManifest } from "./arch-detector.ts";
-import { GitScopeError,gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
+import { coldTrackedPaths,gitPathsSync,GitScopeError,gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
 import {workerData} from "node:worker_threads";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -282,4 +282,15 @@ export function cachedScope(root:string){
 export function syncGraphIndex(root:string,options?:Parameters<typeof discoverScope>[1]){
   try{return {...discoverScope(root,options),degraded:false};}
   catch(error){if(error instanceof GitScopeError)return cachedScope(root);throw error;}
+}
+
+// Standalone synchronous symbol queries use the same path-only scope as the
+// extension. Preserve untracked import targets even when they omit the symbol.
+export function syncSymbolIndex(root:string){
+  const tracked=coldTrackedPaths(root);
+  if(tracked){
+    const untracked=gitPathsSync(root,["ls-files","--others","--exclude-standard","-z","--","."]);
+    if(untracked)return syncGraphIndex(root,{inventory:{files:tracked.concat(untracked),untracked},dirty:[]});
+  }
+  return syncGraphIndex(root);
 }

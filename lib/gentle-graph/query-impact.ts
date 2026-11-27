@@ -3,7 +3,7 @@ import {GitScopeError} from "./git-scope.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
-import { indexSpecificFiles,syncGraphIndex,cachedScope } from "./indexer.ts";
+import { indexSpecificFiles,syncGraphIndex,syncSymbolIndex,cachedScope } from "./indexer.ts";
 import fs from "node:fs";
 import {bindingMatches,searchFrontier,runSync,type QuerySteps} from "./query-shared.ts";
 import type {CodeSymbol,ImpactResult,SymbolRef} from "./types.ts";
@@ -14,7 +14,7 @@ import type {CodeSymbol,ImpactResult,SymbolRef} from "./types.ts";
 export function graphImpact(target:string, options:{projectRoot?: string; budgetMs?:number}={}):ImpactResult {
   const root=path.resolve(options.projectRoot??process.cwd());
   const deadline=performance.now()+Math.min(1500,Math.max(0,options.budgetMs??1500));
-  try{return runSync(root,impactSteps(target,options,root,syncGraphIndex(root),deadline),deadline);}
+  try{return runSync(root,impactSteps(target,options,root,syncSymbolIndex(root),deadline),deadline);}
   catch(error){if(!(error instanceof GitScopeError))throw error;return runSync(root,impactSteps(target,options,root,cachedScope(root),deadline),deadline);}
 }
 export function* impactSteps(target:string, options:{projectRoot?: string; budgetMs?:number},resolved:string,scope:ReturnType<typeof syncGraphIndex>, deadline:number,checkpoint?:(partial:ImpactResult)=>void):QuerySteps<ImpactResult> {

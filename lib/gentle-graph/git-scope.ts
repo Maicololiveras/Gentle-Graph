@@ -181,11 +181,11 @@ export function gitGrepFilesSync(root:string,literal:string|string[],maxFiles=80
 }
 
 // Read the worktree once for both the target and the reverse-import projection.
-export async function grepImpactProjection(root:string, term:string, staged=false){
+export async function grepImpactProjection(root:string, term:string, trackedOnly=false){
   if(!/^[a-z][a-zA-Z0-9_]*$/.test(term))return null;
   const args=[...projectionArgs.slice(0,projectionArgs.indexOf("--")+1),...grepArgs.slice(grepArgs.indexOf("--")+1)];
-  if(staged)args[args.indexOf("--untracked")]="--cached";
-  const rows=await requireGitPaths(root,args,projectionPattern+term+"\n");
+  const search=trackedOnly ? args.filter(arg=>arg!=="--untracked") : args;
+  const rows=await requireGitPaths(root,search,projectionPattern+term+"\n");
   if(!rows)return null;
   const hits=new Set<string>();
   const projection:string[]=[];
@@ -205,16 +205,19 @@ export async function grepImpactProjection(root:string, term:string, staged=fals
   return {hits:[...hits],projection};
 }
 
-// A clean index and worktree agree for these literal searches through CRLF
-// conversion. Smudge filters, ident expansion and alternate encodings may
-// change the searchable text even when Git reports a clean file.
-export async function plainCheckoutText(root:string,files:string[]){
-  const rows=await requireGitPaths(root,["check-attr","-z","--all","--stdin"],files.join("\0")+"\0");
-  if(rows===null)return false;
-  for(let i=1;i<rows.length;i+=3){
-    if(["filter","ident","working-tree-encoding"].includes(rows[i]))return false;
+// Searching the staged objects avoids opening every working file on NTFS.
+// Only use these speculative hits after status confirms a clean tree and
+// attributes confirm that checkout does not transform the searchable text.
+export async function cleanLiteralHits(root:string,term:string,tracked:string[]){
+  const [attributes,rows]=await Promise.all([
+    requireGitPaths(root,["check-attr","-z","--all","--stdin"],tracked.join("\0")+"\0"),
+    requireGitPaths(root,grepArgs.map(arg=>arg==="--untracked"?"--cached":arg),term+"\n")
+  ]);
+  if(!attributes || !rows)return null;
+  for(let i=1;i<attributes.length;i+=3){
+    if(["ident","filter","working-tree-encoding"].includes(attributes[i]))return null;
   }
-  return true;
+  return rows.filter(isIndexableFile);
 }
 
 export interface GitSnapshot {
@@ -225,7 +228,8 @@ export interface GitSnapshot {
   inventory?: Inventory;
   projection?: string[];
   greps:Map<string,string[]>;
-  results:Map<string,string>;
+  firstQuery?:string;
+  results:Map<string,{text:string;mode:string;indexed:number;partial:boolean}>;
   checkedAt:number;
   markers:string[];
   stamp:string;
@@ -281,27 +285,64 @@ async function snapshotFromChanges(root:string,layout:GitLayout,files:string[],u
   }
 }
 
+export function coldTrackedPaths(root:string,layout=rootLayout(root)){
+  if(!layout || fs.existsSync(path.join(root,".gentle-graph","index.json")) ||
+      fs.existsSync(path.join(root,".gentle-graph","index.sqlite")))return;
+  return readTrackedIndexPaths(root,layout);
+}
+
 export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
+  // Only a persisted graph needs a worktree-wide delta. Git's index supplies
+  // tracked names for import resolution; enumerate just untracked paths in
+  // parallel with the worktree search (including untracked callers and tests).
+  if(inspectTerm && layout){
+    const tracked=coldTrackedPaths(root,layout);
+    if(tracked){
+      const name=inspectTerm.split("#").at(-1) ?? inspectTerm;
+      const projected=impact && /^[a-z][a-zA-Z0-9_]*$/.test(name) && fs.existsSync(path.join(root,"tsconfig.json"));
+      // Git can search tracked working-tree bytes directly without its
+      // untracked directory traversal. Include untracked source when present.
+      const searchFiles=async(trackedOnly:boolean)=>{
+        if(projected)return grepImpactProjection(root,name,trackedOnly);
+        const args=trackedOnly?grepArgs.filter(arg=>arg!=="--untracked"):grepArgs;
+        const rows=await requireGitPaths(root,args,name+"\n");
+        return rows && {hits:rows.filter(isIndexableFile),projection:undefined};
+      };
+      const [untracked,trackedSearch]=await Promise.all([
+        requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+        searchFiles(true)
+      ]);
+      const search=untracked?.some(isIndexableFile)?await searchFiles(false):trackedSearch;
+      if(untracked && search){
+        const state=await snapshotFromChanges(root,layout,tracked,untracked,[],search.hits);
+        if(state){
+          const [snapshot]=state;
+          snapshot.dirty=[];
+          snapshot.firstQuery=JSON.stringify([impact?"impact":"inspect",inspectTerm]);
+          snapshot.greps.set(JSON.stringify([name]),search.hits);
+          snapshot.projection=search.projection;
+          return state;
+        }
+      }
+    }
+  }
   // Git for Windows scans tracked and untracked entries in one status pass.
   // Avoid a second filesystem walk in Node and sequential fallbacks on NTFS.
   if(layout && process.platform==="win32"){
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
       const inventorySnapshot = async ():Promise<[GitSnapshot,Inventory]|undefined> => {
-        // Independent Git plumbing reads can overlap the NTFS directory scan
-        // with tracked-file verification. Preserve staged and unstaged paths
-        // separately, including a staged edit undone only in the worktree.
-        const [untracked,staged,changed]=await Promise.all([
+        // diff-files preloads tracked stats using Git's parallel index reader.
+        // Keep untracked discovery independent of the tracked stat sweep.
+        const [changed,untracked,staged]=await Promise.all([
+          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."]),
           requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
-          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."]),
-          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."])
+          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
         ]);
-        if(untracked && staged && changed){
-          const prepared=await snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
-          if(prepared)return prepared;
-        }
+        if(!changed || !untracked || !staged)return;
+        return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
         const prepared=await inventorySnapshot();
@@ -312,18 +353,15 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
       const projectImports=impact && fs.existsSync(path.join(root,"tsconfig.json"));
-      const useObjects=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!);
-      // Search packed objects while Git validates worktree status. This
-      // avoids two processes opening the same thousands of NTFS files.
-      const combined=useObjects ? Promise.all([
-        grepImpactProjection(root,inspectTerm!,true),
-        plainCheckoutText(root,tracked)
-      ]).then(([result,plain])=>plain?result:null).catch(()=>null) : undefined;
+      // Search the bytes the parser sees, including smudged files. This
+      // eliminates the separate check-attr pass over every tracked path.
+      const combined=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!)
+        ? grepImpactProjection(root,inspectTerm!,true).catch(()=>null) : undefined;
       // status reports staged, unstaged and untracked changes together. With
       // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
-        gitSnapshot(root),
-        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root,inspectTerm!,Infinity,null).catch(()=>null) : null,
+        inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)),
+        combined ? combined.then(result=>result?.hits) : simple ? cleanLiteralHits(root,inspectTerm!,tracked).catch(()=>null) : null,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
@@ -357,12 +395,12 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
   return Promise.all([gitSnapshot(root),gitSessionInventory(root,null)]);
 }
 
-export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
+export async function gitSnapshot(projectRoot:string,query?:string):Promise<GitSnapshot|null>{
   const root=path.resolve(projectRoot);
   const old=snapshots.get(root);
   // The TTL bounds discovery of previously clean or new paths. A modified
   // dirty file, branch/index change or manual guide edit invalidates immediately.
-  if(old && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
+  if(old && (!old.firstQuery || old.firstQuery===query) && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
   const [rows,layout]=await Promise.all([
     requireGitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
     layouts.get(root)??requireGitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))

@@ -104,23 +104,25 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
   const prefix=root+path.sep;
   for(const {name,start,end,racy} of groups){
     if(!racy && !verifyAll){remaining.add(name);continue;}
-    folders.add(name);
+    let verified=true;
     for(let i=start;i<end;i++){
       const at = offsets[i];
       const mode = bytes.readUInt32BE(at+24);
-      if ((mode & 0o170000) !== 0o100000) return false;
+      if ((mode & 0o170000) !== 0o100000) {verified=false;break;}
       const cs = bytes.readUInt32BE(at+4), ms = bytes.readUInt32BE(at+12);
-      if (!cs || !ms) return false;
+      if (!cs || !ms) {verified=false;break;}
       let st;
       try { st = fs.lstatSync(prefix+files[i],{bigint:true,throwIfNoEntry:false}); }
-      catch { return false; }
+      catch { verified=false;break; }
       if (!st?.isFile() || st.size !== BigInt(bytes.readUInt32BE(at+36)) ||
           st.mtimeNs !== BigInt(bytes.readUInt32BE(at+8))*1000000000n+BigInt(ms) ||
           st.ctimeNs !== BigInt(bytes.readUInt32BE(at))*1000000000n+BigInt(cs) ||
           st.ctimeNs >= snapshot.mtimeNs || st.mtimeNs >= snapshot.mtimeNs ||
           Number(st.ino & 0xffffffffn) !== bytes.readUInt32BE(at+20) ||
-          (Number(st.mode)&0o100) !== (mode&0o100)) return false;
+          (Number(st.mode)&0o100) !== (mode&0o100)) {verified=false;break;}
     }
+    if(verified)folders.add(name);
+    else remaining.add(name);
   }
   const after = fs.statSync(index,{bigint:true,throwIfNoEntry:false});
   if(after?.ctimeNs!==snapshot.ctimeNs || after.ino!==snapshot.ino)return false;

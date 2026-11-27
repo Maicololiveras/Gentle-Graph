@@ -13,18 +13,25 @@ export interface Query {
   includeSnippets?: boolean;
 }
 
+export interface QueryReply {
+  text:string;
+  mode:string;
+  indexed:number|null;
+  partial:boolean;
+}
+
 interface Lane {
   worker?: Worker;
   compiler?: Worker;
   tail: Promise<unknown>;
   stopping?: Promise<number>;
   closed?: boolean;
-  pending: Map<string, Promise<string>>;
+  pending: Map<string, Promise<QueryReply>>;
 }
 
 const lanes = new Map<string, Lane>();
 
-async function dispatch(lane: Lane, query: Query): Promise<string> {
+async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
   await lane.stopping;
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
@@ -67,7 +74,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
       finish();
       lane.worker = undefined;
       lane.stopping = worker.terminate();
-      resolve(checkpoint);
+      resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
     }, 1500) : undefined;
 
     function finish() {
@@ -86,13 +93,13 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
 
     function exit(code: number) { error(new Error("Graph worker exited (" + code + ")")); }
 
-    function message(reply: {text?: string; error?: string; checkpoint?: string; timedOut?: boolean}) {
+    function message(reply: {result?: QueryReply; error?: string; checkpoint?: string; timedOut?: boolean}) {
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"reply",kind:query.kind,cold,ms:performance.now()-started}));
       finish();
-      if (reply.timedOut) resolve(checkpoint);
+      if (reply.timedOut) resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
       else if (reply.error) reject(new Error(reply.error));
-      else resolve(reply.text);
+      else resolve(reply.result);
     }
 
     worker.ref();
@@ -117,7 +124,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
   });
 }
 
-export function sessionQuery(input: Query): Promise<string> {
+export function sessionQueryDetails(input: Query): Promise<QueryReply> {
   const query = {...input, root: path.resolve(input.root)};
   let lane = lanes.get(query.root);
   if (!lane) {
@@ -145,4 +152,15 @@ export async function closeQuerySessions() {
     await lane.stopping;
     await lane.tail.catch(() => {});
   }));
+}
+
+const textResults=new WeakMap<Promise<QueryReply>,Promise<string>>();
+export function sessionQuery(input:Query){
+  const reply=sessionQueryDetails(input);
+  let text=textResults.get(reply);
+  if(!text){
+    text=reply.then(result=>result.text);
+    textResults.set(reply,text);
+  }
+  return text;
 }

@@ -169,9 +169,11 @@ it("finds re-export dependents and bounds all compact read-tool responses", () =
     inspect[0].snippet = long;
     impact.affectedFiles.push(long);
     guide.recommendedModules[0].reuseNotes.push(long);
-    assert.equal(formatGuide(guide).length, 1199);
-    assert.equal(formatInspect(inspect).length, 3000);
-    assert.equal(formatImpact(impact).length, 2000);
+    for(const [output,max] of [[formatGuide(guide),1199],[formatInspect(inspect),3000],[formatImpact(impact),2000]] as const){
+      assert.ok(Buffer.byteLength(output)<=max);
+      assert.ok(output.endsWith("\n…"));
+      assert.ok(!output.includes("xxx"));
+    }
   } finally {
     clearMemoryCache(root);
     fs.rmSync(root, { recursive: true, force: true });
@@ -318,7 +320,7 @@ it("reopens a large WAL index, updates and removes individual entries", async ()
 });
 
 it("JIT literal search includes untracked source files and ignores graph artifacts", async () => {
-  const { gitGrepFiles, grepImpactProjection, gitPathsSync, plainCheckoutText } = await import("../lib/gentle-graph/git-scope.ts");
+  const { gitGrepFiles, grepImpactProjection, gitPathsSync, cleanLiteralHits } = await import("../lib/gentle-graph/git-scope.ts");
   const { execFileSync } = await import("node:child_process");
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"graph-grep-"));
   try {
@@ -334,12 +336,19 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     const combined=await grepImpactProjection(dir,"alpha");
     const {projectionArgs,projectionPattern}=await import("../lib/gentle-graph/git-projection.ts");
     assert.deepEqual(combined?.hits.sort(),["client.py","src/entry.ts"]);
+    assert.deepEqual((await grepImpactProjection(dir,"alpha",true))?.hits,[]);
     assert.deepEqual(combined?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
     execFileSync("git",["add","src","client.py"],{cwd:dir});
-    assert.deepEqual(await grepImpactProjection(dir,"alpha",true),combined);
-    assert.equal(await plainCheckoutText(dir,["src/entry.ts","client.py"]),true);
+    const tracked=["src/entry.ts","src/query.TS","client.py"];
+    assert.deepEqual((await cleanLiteralHits(dir,"alpha",tracked))?.sort(),["client.py","src/entry.ts"]);
     fs.writeFileSync(path.join(dir,".gitattributes"),"*.ts filter=custom-text\n");
-    assert.equal(await plainCheckoutText(dir,["src/entry.ts","client.py"]),false);
+    assert.equal(await cleanLiteralHits(dir,"alpha",tracked),null);
+    fs.writeFileSync(path.join(dir,"src","entry.ts"),"import './beta';\nbeta();");
+    assert.deepEqual((await grepImpactProjection(dir,"alpha"))?.hits,["client.py"]);
+    const working=await grepImpactProjection(dir,"beta");
+    assert.deepEqual(working?.hits,["src/entry.ts"]);
+    assert.deepEqual(await grepImpactProjection(dir,"beta",true),working);
+    assert.deepEqual(working?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -360,6 +369,21 @@ it("ranks a relevant imported implementation used by the entry among the first t
     assert(!modules(3).includes("unused.ts"));
     assert.equal(new Set(modules(5)).size,5);
   } finally { clearMemoryCache(root); fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+it("promotes a called operation matching the intent ahead of a generic config helper", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "guide-called-"));
+  t.after(() => { clearMemoryCache(root); fs.rmSync(root, {recursive:true, force:true}); });
+  const files = {
+    "invoice-routing-router.ts": "import { loadInvoice } from './service.ts';\nimport { configHome } from './config-home.ts';\nexport function invoiceRouter() { return loadInvoice(configHome()); }",
+    "invoice-router-policy.ts": "export function invoiceRouterPolicy() {}",
+    "service.ts": "export function loadInvoice() {}",
+    "config-home.ts": "export function configHome() {}"
+  };
+  for (const [file, body] of Object.entries(files)) fs.writeFileSync(path.join(root,file),body);
+  const promoted = (intent:string) => graphGuide(intent,{projectRoot:root,limit:3}).recommendedModules.map(m=>m.file);
+  assert.ok(promoted("invoice routing router config loading").includes("service.ts"));
+  assert.ok(promoted("invoice routing router config home").includes("config-home.ts"));
 });
 
 it("reuses Git searches and invalidates them on repeated edits of a dirty file", async t => {
@@ -522,3 +546,33 @@ it("keeps Go package-private transitive callers inside their package", t=>{
   assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });
 import "./sqlite-store.test.ts";
+
+
+it("keeps the guide direct and hides secondary declarations only alongside codemode",async()=>{
+  const {default:register}=await import("../extensions/gentle-graph.ts");
+  const tools=new Map();
+  register({registerTool:tool=>tools.set(tool.name,tool),on:()=>{}} as any);
+  assert.equal(tools.get("graph_guide").prepareLoadout,undefined);
+  for(const name of ["graph_impact","graph_inspect","graph_register_pattern"]){
+    const {prepareLoadout}=tools.get(name);
+    assert.equal(prepareLoadout({declared:[{name}]}),undefined);
+    assert.equal(prepareLoadout({declared:[{name:"codemode"}]}),undefined);
+    assert.deepEqual(prepareLoadout({declared:[{name},{name:"codemode"}]}),{hiddenDeclarations:[name]});
+  }
+});
+
+it("reports cold query telemetry and finds an untracked consumer in a fresh worktree",async t=>{
+  const root=largeRepo(t);
+  fs.writeFileSync(path.join(root,"tsconfig.json"),"{}");
+  fs.writeFileSync(path.join(root,"extra.test.ts"),'import { targetFn } from "./billing";\nexport function newConsumer(){return targetFn();}');
+  const {sessionQueryDetails,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  try {
+    const query={kind:"impact" as const,root,term:"targetFn"};
+    const first=await sessionQueryDetails(query);
+    assert.equal(first.mode,"jit");
+    assert.equal(first.partial,false);
+    assert.ok(first.indexed>0 && first.indexed<40);
+    assert.match(first.text,/extra\.test\.ts/);
+    assert.deepEqual(await sessionQueryDetails(query),first);
+  }finally{await closeQuerySessions();}
+});
