@@ -395,3 +395,16 @@ it("coalesces concurrent host queries and releases workers on shutdown", async t
   assert.equal(first,sessionQuery(q));
   assert.match(await first,/src\/auth.ts/);
 });
+
+it("refreshes a worker result when a dirty source is edited again", async t=>{
+  const {sessionQuery,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  const root=largeRepo(t,1);
+  const file=path.join(root,"caller.ts");
+  const q={kind:"inspect" as const,root,term:"editableCaller"};
+  try {
+    fs.writeFileSync(file,"export function editableCaller() { return 12; }");
+    assert.match(await sessionQuery(q),/return 12/);
+    fs.writeFileSync(file,"export function editableCaller() { return 234; }");
+    assert.match(await sessionQuery(q),/return 234/);
+  } finally {await closeQuerySessions();}
+});

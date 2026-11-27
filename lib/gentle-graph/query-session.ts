@@ -1,6 +1,8 @@
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
+import {gitSnapshot,gitSessionInventory} from "./git-scope.ts";
+
 export interface Query {
   kind: "guide" | "inspect" | "impact";
   root: string;
@@ -23,6 +25,7 @@ const lanes = new Map<string, Lane>();
 async function dispatch(lane: Lane, query: Query): Promise<string> {
   await lane.stopping;
   if (lane.closed) throw new Error("Graph session has ended");
+  const cold = !lane.worker;
   const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url));
   return new Promise((resolve, reject) => {
     let checkpoint = "Partial impact (time budget reached)\n" + query.term;
@@ -60,7 +63,14 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     worker.on("message", message);
     worker.once("exit", exit);
     worker.once("error", error);
-    try { worker.postMessage(query); } catch (err) { error(err); }
+    async function send() {
+      // Run the first Git commands while Node loads the language adapters in the worker.
+      const prepared = cold ? await Promise.all([
+        gitSnapshot(query.root), gitSessionInventory(query.root,null)
+      ]) : undefined;
+      if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
+    }
+    send().catch(error);
   });
 }
 

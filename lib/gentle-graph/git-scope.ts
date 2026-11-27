@@ -80,6 +80,7 @@ export interface GitSnapshot {
   results:Map<string,string>;
 }
 const snapshots=new Map<string,GitSnapshot>();
+export function adoptGitSnapshot(state:GitSnapshot){snapshots.set(state.root,state);}
 export function clearGitSession(){snapshots.clear();}
 export async function gitSnapshot(root:string):Promise<GitSnapshot|null>{
   root=path.resolve(root);
@@ -139,4 +140,24 @@ export async function gitGrepFiles(root:string,literal:string|string[],maxFiles=
     }
   }
   return files.slice(0,maxFiles);
+}
+
+// A fresh checkout can make Git hash every tracked file to distinguish racy-clean
+// timestamps. Once a query is cached, compare its working-tree metadata and
+// index entries before requesting a second porcelain status.
+export async function worktreeStamp(root:string):Promise<string|null>{
+  const [rows,head]=await Promise.all([
+    gitPaths(root,["ls-files","-t","--stage","--cached","--others","--exclude-standard","-z","--","."]),
+    gitPaths(root,["rev-parse","--verify","HEAD"])
+  ]);
+  if(!rows || !head || rows.length>5000)return null;
+  const hash=createHash("sha256").update(head.join(""));
+  for(const row of rows){
+    const file=row.startsWith("? ")?row.slice(2):row.slice(row.indexOf("\t")+1);
+    if(file.startsWith(".gentle-graph/") && file!==".gentle-graph/guide.json")continue;
+    const stat=fs.lstatSync(path.join(root,file),{throwIfNoEntry:false,bigint:true});
+    hash.update(row).update("\0").update(stat ? stat.size+":"+stat.mtimeNs+":"+stat.ctimeNs : "-").update("\0");
+  }
+  const guide=fs.statSync(path.join(root,".gentle-graph","guide.json"),{throwIfNoEntry:false,bigint:true});
+  return hash.update(String(guide?.ctimeNs)).digest("hex");
 }
