@@ -21,16 +21,16 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   const { index } = scope;
   const search = searchFrontier(resolved, scope,deadline);
   const isFile = scope.paths.has(target);
-  if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { paths: scope.paths, followImports: 1 });
+  if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { index:scope.index, paths: scope.paths, followImports: 1 });
   const owner=target.includes("#")?target.slice(0,target.lastIndexOf("#")):undefined;
   const term=target.split("#").at(-1)??target;
   let initialHits:string[]|null=null;
   if(scope.mode==="jit" && !isFile){
     if(owner && scope.paths.has(owner)){
-      indexSpecificFiles(resolved,[owner],{paths:scope.paths,deadline});
+      indexSpecificFiles(resolved,[owner],{index:scope.index,paths:scope.paths,deadline});
     } else {
       initialHits=yield [term];
-      if(initialHits)indexSpecificFiles(resolved,possibleModuleDefinitions(resolved,initialHits,term),{paths:scope.paths,deadline});
+      if(initialHits)indexSpecificFiles(resolved,possibleModuleDefinitions(resolved,initialHits,term),{index:scope.index,paths:scope.paths,deadline});
     }
   }
   function identifyRoots(){
@@ -166,7 +166,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
         if(index.files[ref.file].symbols.some(s=>s.name===owner && /\bpartial\b/.test(s.signature)))terms.push(owner);
       } else terms.push(ref.name);
     }
-    if(localFiles.size)indexSpecificFiles(resolved,localFiles,{paths:scope.paths,deadline});
+    if(localFiles.size)indexSpecificFiles(resolved,localFiles,{index:scope.index,paths:scope.paths,deadline});
     terms.push(...closure.contracts);
     const paths: string[] = [];
     for (const file of [...closure.origins, ...closure.affectedFiles]) {

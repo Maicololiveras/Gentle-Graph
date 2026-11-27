@@ -53,9 +53,9 @@ export function searchFrontier(root: string, scope: ReturnType<typeof syncGraphI
     const hits = yield pending;
     if(performance.now()>=deadline)return false;
     if (!hits) {
-      indexSpecificFiles(root, scope.knownFiles, { paths: scope.paths, deadline });
+      indexSpecificFiles(root, scope.knownFiles, { index:scope.index, paths: scope.paths, deadline });
       complete = true;
-    } else if (hits.length) indexSpecificFiles(root, hits, { paths: scope.paths, followImports: hits.some(f=>f.endsWith(".xaml"))?1:0,deadline });
+    } else if (hits.length) indexSpecificFiles(root, hits, { index:scope.index, paths: scope.paths, followImports: hits.some(f=>f.endsWith(".xaml"))?1:0,deadline });
     return true;
   };
 }

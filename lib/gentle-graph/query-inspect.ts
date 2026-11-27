@@ -23,13 +23,13 @@ export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string;
   yield* search([name]);
   if (scope.mode === "jit" && !getLookup(index).symbolByName.has(name)) {
     // Partial and case-insensitive matches may occur in the path alone.
-    indexSpecificFiles(resolved, scope.knownFiles, { paths: scope.paths });
+    indexSpecificFiles(resolved, scope.knownFiles, { index:scope.index, paths: scope.paths });
   }
   // A receiver may be a local instance of a directly imported class.
   if(scope.mode==="jit"){
     const roots=getLookup(index).symbolByName.get(name)??[];
     for(const file of new Set(roots.map(s=>s.file))){
-      if(/\.[cm]?[jt]sx?$/.test(file))indexSpecificFiles(resolved,[file],{paths:scope.paths,followImports:1});
+      if(/\.[cm]?[jt]sx?$/.test(file))indexSpecificFiles(resolved,[file],{index:scope.index,paths:scope.paths,followImports:1});
     }
   }
   let frontierNames = new Set([name]);
