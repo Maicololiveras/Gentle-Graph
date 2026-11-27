@@ -165,10 +165,17 @@ export function loadGraphIndex(projectRoot:string):GraphIndex{
 const sleep=new Int32Array(new SharedArrayBuffer(4));
 function withFileLock<T>(file:string,work:()=>T):T{
   const limit=Date.now()+15000;
+  let sharingRetries=0;
   for(;;){
     let fd:number;
     try{fd=fs.openSync(file,"wx");}
     catch(error){
+      // NTFS may briefly report access denied while another process deletes
+      // its lock. Retry exclusive creation, never unlink on a sharing error.
+      if(process.platform==="win32" && ["EPERM","EACCES","EBUSY"].includes(error.code) &&
+          sharingRetries++<10 && Date.now()<limit){
+        Atomics.wait(sleep,0,0,15+Math.floor(Math.random()*36));continue;
+      }
       if(error.code!=="EEXIST")throw error;
       const stat=fs.statSync(file,{throwIfNoEntry:false});
       if(stat && Date.now()-stat.mtimeMs>5000){
