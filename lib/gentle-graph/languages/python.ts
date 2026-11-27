@@ -27,8 +27,15 @@ export const python: LanguageAdapter = {
       const [, kind, name] = decl;
       const end = findIndentBlockEnd(clean, i, clean.length);
       const owner = classes.at(-1);
-      add(owner ? owner.name + "." + name : name, kind === "class" ? "class" : owner ? "method" : "function", i, end, !name.startsWith("_"), kind === "class" ? [] : undefined);
-      if (kind === "class") classes.push({ name, end });
+      const sym = add(owner ? owner.name + "." + name : name, kind === "class" ? "class" : owner ? "method" : "function", i, end, !name.startsWith("_"), kind === "class" ? [] : undefined);
+      if (kind === "class") {
+        classes.push({ name, end });
+        const bases = clean.slice(i, end + 1).join(" ").match(/^\s*class\s+\w+\s*\(([^)]*)\)\s*:/);
+        if (bases) sym.contracts = bases[1].split(",").flatMap(base => {
+          const match = base.trim().match(/^(?:[\w.]+\.)?(\w+)(?:\[.*\])?$/);
+          return match ? [match[1]] : [];
+        });
+      }
     });
     return result;
   }

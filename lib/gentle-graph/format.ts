@@ -14,7 +14,7 @@ function refs(values: SymbolRef[]): string[] {
 }
 
 export function formatGuide(g: GuideRecommendation): string {
-  return compact([
+  const guide = compact([
     ...g.matchingPatterns.map(p => `Reuse ${p.entry} — ${p.guidance}`),
     field("Docs", g.relevantDocs),
     g.architecture ? "ARCH: " + g.architecture : "",
@@ -23,7 +23,15 @@ export function formatGuide(g: GuideRecommendation): string {
     ...g.recommendedModules.map(m => [m.file, ...m.reuseNotes, ...m.boundaries].join(" · ")),
     field("Stale", g.stalePatternsWarning),
     ...(!g.matchingPatterns.length && !g.recommendedModules.length ? g.suggestedPath : [])
-  ], 2400);
+  ], g.subgraph?.length ? 780 : 2400);
+  if (!g.subgraph?.length) return guide;
+  const blocks = g.subgraph.map(m => compact([
+    m.symbol.id + ":" + m.symbol.line,
+    ...[["Calls", m.callees], ["Called by", m.callers], ["Implemented by", m.implementations ?? []]].map(([label, items]: [string, SymbolRef[]]) =>
+      field(label, refs(items).slice(0, 3)).slice(0, 115)),
+    m.snippet.split("\n").slice(0,10).join("\n")
+  ], 730));
+  return compact([guide, ...blocks], 3000);
 }
 
 export function formatInspect(matches: InspectResult[]): string {

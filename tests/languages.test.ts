@@ -231,3 +231,29 @@ it("resolves explicit C# and TypeScript implementations separately from consumer
     assert.deepEqual(result.find(m=>m.symbol.file==="port.ts")?.implementations.map(s=>s.name), ["TsAdapter"]);
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
+
+it("distinguishes declared Rust and Python implementations from ordinary consumers", t => {
+  const root = project(t,{
+    "port.rs":"pub trait Port {}",
+    "database.rs":"pub struct Db;\nimpl Port for Db {}",
+    "consumer.rs":"fn consume(port: &dyn Port) {}",
+    "port.py":"class Port:\n    pass",
+    "database.py":"class Database(Port):\n    pass",
+    "consume.py":"def consume(port: Port):\n    pass"
+  });
+  for (const [file,name] of [["port.rs","Db"],["port.py","Database"]]) {
+    const [match] = graphInspect(file+"#Port",root);
+    assert.deepEqual(match.implementations.map(x=>x.name),[name]);
+    assert(isTestFile(file.endsWith(".rs")?"tests/port.rs":"tests/test_port.py"));
+  }
+});
+
+it("returns a compact opt-in subgraph and excludes build directories", async t => {
+  const opts = project(t,{"billing.py":"def billing():\n    return amount()\ndef amount():\n    return 1", "out/generated.py":"def billing(): pass"});
+  const { formatGuide } = await import("../lib/gentle-graph/format.ts");
+  const guide = graphGuide("billing",{...opts,includeSnippets:true});
+  assert(guide.subgraph.some(m=>m.symbol.name==="billing" && m.callees.some(c=>c.name==="amount")));
+  assert(!guide.subgraph.some(m=>m.symbol.file.startsWith("out/")));
+  assert(formatGuide(guide).length<=3000);
+  assert.equal(graphGuide("billing",opts).subgraph,undefined);
+});

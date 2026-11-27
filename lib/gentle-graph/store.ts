@@ -41,7 +41,7 @@ export function getLookup(index: GraphIndex): GraphLookup {
   }
   for (const symbol of symbols) {
     symbolById.set(symbol.id, symbol);
-    if (["class", "record", "struct"].includes(symbol.kind)) {
+    if (symbol.contracts?.length) {
       for (const name of new Set(symbol.contracts ?? [])) append(implementationsByContract, name, symbol);
     }
     for (const name of symbolNames(symbol.name)) append(symbolByName, name, symbol);
@@ -105,18 +105,18 @@ function readSqlIndex(root: string): GraphIndex | undefined {
   const db = openDatabase(file);
   try {
     const meta = db.prepare("SELECT version, updatedAt FROM metadata").get();
-    if (meta?.version !== 6) return;
+    if (meta?.version !== 7) return;
     const files: GraphIndex["files"] = {};
     for (const row of db.prepare("SELECT path, data FROM files").iterate())
       files[String(row.path)] = JSON.parse(String(row.data));
-    return { version: 6, projectRoot: root, updatedAt: String(meta.updatedAt), files };
+    return { version: 7, projectRoot: root, updatedAt: String(meta.updatedAt), files };
   } finally { db.close(); }
 }
 function writeSqlIndex(dir: string, index: GraphIndex, changed: Set<string>, rebuild: boolean) {
   const db = openDatabase(path.join(dir, sqliteCache));
   try {
     db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS metadata(version INTEGER, updatedAt TEXT); CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, data TEXT)");
-    const initialized = !rebuild && db.prepare("SELECT version FROM metadata").get()?.version === 6;
+    const initialized = !rebuild && db.prepare("SELECT version FROM metadata").get()?.version === 7;
     if (!initialized) db.exec("DELETE FROM files");
     const put = db.prepare("INSERT OR REPLACE INTO files VALUES (?, ?)");
     const remove = db.prepare("DELETE FROM files WHERE path=?");
@@ -125,7 +125,7 @@ function writeSqlIndex(dir: string, index: GraphIndex, changed: Set<string>, reb
       else remove.run(key);
     }
     db.exec("DELETE FROM metadata");
-    db.prepare("INSERT INTO metadata VALUES(6, ?)").run(index.updatedAt);
+    db.prepare("INSERT INTO metadata VALUES(7, ?)").run(index.updatedAt);
     db.exec("COMMIT");
   } finally { db.close(); }
 }
@@ -145,7 +145,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   if (fs.existsSync(filePath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as GraphIndex;
-      if (parsed && parsed.version === 6 && parsed.files) {
+      if (parsed && parsed.version === 7 && parsed.files) {
         memoryIndexCache.set(resolved, parsed);
         return parsed;
       }
@@ -155,7 +155,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   }
 
   const fresh: GraphIndex = {
-    version: 6,
+    version: 7,
     projectRoot: resolved,
     updatedAt: new Date(0).toISOString(),
     files: {}

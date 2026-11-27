@@ -20,7 +20,7 @@ const IGNORED_DIRS = new Set([
   ".next",
   ".turbo",
   "vendor",
-  "target",
+  "target", ".gradle", ".svelte-kit", ".dart_tool", "Pods", ".build", "out",
   "__pycache__"
 ]);
 
@@ -98,7 +98,7 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
 }
 
 function eligible(file: string): boolean {
-  return !/(?:^|\/)(?:\.git|\.gentle-graph|node_modules|bin|obj|\.vs|packages|TestResults|dist|build|coverage|\.next|\.turbo|vendor|target|__pycache__)\//.test(file) &&
+  return !/(?:^|\/)(?:\.git|\.gentle-graph|node_modules|bin|obj|\.vs|packages|TestResults|dist|build|coverage|\.next|\.turbo|vendor|target|\.gradle|\.svelte-kit|\.dart_tool|Pods|\.build|out|__pycache__)\//.test(file) &&
     !/\.(min|bundle)\.[cm]?[jt]sx?$/i.test(file);
 }
 

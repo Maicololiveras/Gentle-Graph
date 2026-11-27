@@ -26,6 +26,12 @@ export const rust: LanguageAdapter = {
       const impl = line.match(/\bimpl(?:\s*<[^>]+>)?\s+([^{}]+)\s*\{/);
       if (impl) {
         owner = impl[1].split(/\s+for\s+/).at(-1)!.trim().split(/[<\s]/)[0];
+        const trait = impl[1].match(/^(?:[\w:]+::)?(\w+)(?:<[^>]*>)?\s+for\s+/);
+        if (trait) {
+          const site = add("impl " + trait[1] + " for " + owner, "struct", i, i, false, []);
+          site.implementationName = owner.split("::").at(-1);
+          site.contracts = [trait[1]];
+        }
         until = findBraceBlockEnd(clean, i, clean.length);
       }
       const decl = line.match(/\b(pub(?:\([^)]*\))?\s+)?(?:async\s+)?(fn|struct|enum|trait)\s+(\w+)/);

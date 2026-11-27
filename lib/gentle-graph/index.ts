@@ -76,7 +76,7 @@ function searchFrontier(root: string, scope: ReturnType<typeof syncGraphIndex>) 
  */
 export function graphGuide(
   intent: string,
-  options: { projectRoot?: string; limit?: number } = {}
+  options: { projectRoot?: string; limit?: number; includeSnippets?: boolean } = {}
 ): GuideRecommendation {
   const resolved = path.resolve(options.projectRoot ?? process.cwd());
   const scope = syncGraphIndex(resolved);
@@ -126,6 +126,13 @@ export function graphGuide(
       guide.slice = "Ubica el caso de uso en " + slice;
       guide.suggestedPath.unshift(guide.slice);
     }
+  }
+  if (options.includeSnippets) {
+    const tokens = tokenizeIntent(intent);
+    const candidates = guide.recommendedModules.flatMap(module => index.files[module.file]?.symbols ?? []);
+    const score = (s: CodeSymbol) => Number(s.exported) + 4 * tokens.filter(t => s.name.toLowerCase().includes(t)).length;
+    const selected = candidates.sort((a,b) => score(b)-score(a)).slice(0,3);
+    guide.subgraph = selected.flatMap(s => graphInspect(s.id, {projectRoot:resolved, maxMatches:1}));
   }
   return guide;
 }
@@ -247,14 +254,14 @@ export function graphInspect(
     }
 
     const implementations: SymbolRef[] = [];
-    if (rootSym.kind === "interface") {
+    if (["interface","class","struct","trait","record"].includes(rootSym.kind)) {
       const language = index.files[rootSym.file].language;
-      const peers = (byName.get(rootSym.name) ?? []).filter(s => s.kind === "interface" && index.files[s.file].language === language);
+      const peers = (byName.get(rootSym.name) ?? []).filter(s => s.kind === rootSym.kind && index.files[s.file].language === language);
       for (const candidate of getLookup(index).implementationsByContract.get(rootSym.name) ?? []) {
         if (index.files[candidate.file].language !== language) continue;
         // An unqualified base name alone cannot attribute a homonymous contract.
         if (peers.length !== 1) continue;
-        implementations.push({ name: candidate.name, file: candidate.file, line: candidate.line, hop: 1 });
+        implementations.push({ name: candidate.implementationName ?? candidate.name, file: candidate.file, line: candidate.line, hop: 1 });
       }
     }
     return {
