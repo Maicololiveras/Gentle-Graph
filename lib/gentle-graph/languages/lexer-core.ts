@@ -74,18 +74,19 @@ export function extractGentleTags(lines: string[], lineIdx: number) {
 
 export function sourceFile(file: string, content: string, language: string) {
   const lines = content.split(/\r?\n/);
-  const clean = stripCommentsAndStrings(content, language).split(/\r?\n/);
+  let masked: string[] | undefined;
+  const cleanLines = () => masked ??= stripCommentsAndStrings(content, language).split(/\r?\n/);
   const result: ParsedFile = { language, imports: [], exports: [], symbols: [] };
   function add(name: string, kind: SymbolKind, line: number, end: number, exported: boolean, calls?: string[]) {
     const short = name.split(/::|\./).at(-1)!;
     const symbol: CodeSymbol = {
       id: file + "#" + name, name, kind, file, exported, line: line + 1, endLine: end + 1,
       signature: lines[line].trim().slice(0, 160), ...extractGentleTags(lines, line),
-      calls: calls ?? extractCalls(clean.slice(line, end + 1).join("\n"), short)
+      calls: calls ?? extractCalls(cleanLines().slice(line, end + 1).join("\n"), short)
     };
     result.symbols.push(symbol);
     if (exported) result.exports.push(name);
     return symbol;
   }
-  return { lines, clean, result, add };
+  return { lines, get clean() { return cleanLines(); }, result, add };
 }

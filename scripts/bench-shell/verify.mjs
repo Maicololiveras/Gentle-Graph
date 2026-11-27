@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 import { test, after } from "node:test";
 const mod = await import(pathToFileURL(path.resolve("lib/agent-tool-overlay.ts")));
@@ -14,29 +15,45 @@ function write(file,value) {
   fs.writeFileSync(file,JSON.stringify(value));
 }
 write(path.join(config,"agent-overlays.d","01.json"),{"*":{add:["read","old"]},worker:{remove:["read"]}});
-write(path.join(config,"tools.json"),{worker:{add:["custom"],remove:["old"]},bad:27});
+write(path.join(config,"tools.json"),{worker:{add:["custom"],remove:["old"]},ghost:{add:["idle"]},bad:27});
 write(path.join(cwd,".pi/gentle-ai/tools.json"),{worker:{add:["recovered"]},"*":{remove:["custom","recovered"],add:["old"]}});
-const forAgent = name=>mod.loadToolOverlayForAgent(config,cwd,name);
-test("exact after wildcard; project after global",()=>{
-  const {entry,notices}=forAgent("worker");
-  assert.deepEqual([...entry.add].sort(),["old","recovered"]);
-  assert.deepEqual([...entry.remove].sort(),["custom","read"]);
-  assert(notices.some(n=>n.includes("bad")));
+const agentHome=path.join(tmp,"home"), dir=path.join(agentHome,"agents");
+fs.mkdirSync(dir,{recursive:true});
+for(const name of ["worker","verify"]) fs.writeFileSync(path.join(dir,name+".md"),"---\nname: "+name+"\ntools:\n  - existing\n---\nbody");
+const roots={cwd,home:agentHome,agentHome,configHome:config};
+const files=[path.join(config,"agent-overlays.d","01.json"),path.join(config,"tools.json"),path.join(cwd,".pi/gentle-ai/tools.json")];
+const reads=new Map(files.map(file=>[file,0]));
+const readFileSync=fs.readFileSync;
+let result;
+try {
+  fs.readFileSync=function(file,...args) {
+    if(reads.has(file)) reads.set(file,reads.get(file)+1);
+    return readFileSync.call(this,file,...args);
+  };
+  syncBuiltinESMExports();
+  result=agents.discoverAgents(roots);
+} finally {fs.readFileSync=readFileSync;syncBuiltinESMExports();}
+test("each config file is read once for both agents",()=>{
+  assert.deepEqual([...reads.values()],[1,1,1]);
 });
-test("wildcard applies to unrelated agents",()=>{
-  const tools=mod.applyToolOverlay(["base"],forAgent("verify").entry);
-  assert.deepEqual(tools.sort(),["base","old","read"]);
+const tools=name=>result.agents.find(a=>a.name===name).tools;
+test("per-file and inter-file precedence through discovery",()=>{
+  assert(tools("worker").includes("recovered") && tools("worker").includes("old"));
+  assert(!tools("worker").includes("custom") && !tools("worker").includes("read"));
 });
-test("absent overlay and legacy loader",()=>{
-  assert.equal(mod.loadToolOverlayForAgent(tmp,tmp,"missing").entry,undefined);
-  assert(mod.loadToolOverlays(config,cwd).entries.worker);
+test("wildcard applies to the second agent",()=>{
+  for (const tool of ["existing","old","read"]) assert(tools("verify").includes(tool));
+  assert(!tools("verify").includes("recovered"));
 });
-test("normal discovery applies wildcard and retains unknown-agent notices",()=>{
-  const agentHome=path.join(tmp,"home"), dir=path.join(agentHome,"agents");
-  fs.mkdirSync(dir,{recursive:true});
-  fs.writeFileSync(path.join(dir,"worker.md"),"---\nname: worker\ntools:\n  - existing\n---\nbody");
-  const result=agents.discoverAgents({cwd,home:agentHome,agentHome,configHome:config});
-  const worker=result.agents.find(a=>a.name==="worker");
-  assert(worker.tools.includes("old") && worker.tools.includes("recovered"));
+test("legacy loader preserves literal entries",()=>{
+  const {entries}=mod.loadToolOverlays(config,cwd);
+  assert.deepEqual([...entries.worker.add].sort(),["custom","recovered"]);
+  assert.deepEqual([...entries.worker.remove].sort(),["old","read"]);
+  assert.deepEqual([...entries["*"].add].sort(),["old","read"]);
+  assert.deepEqual([...entries["*"].remove].sort(),["custom","recovered"]);
+});
+test("invalid entries still warn and wildcard is recognized",()=>{
+  assert(result.notices.some(n=>n.includes("bad")));
+  assert(result.notices.some(n=>n.includes('unknown agent "ghost"')));
   assert(!result.notices.some(n=>n.includes('unknown agent "*"')));
 });

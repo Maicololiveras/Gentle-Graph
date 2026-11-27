@@ -74,6 +74,18 @@ Con Node 24+, Git y tu Pi autenticado, ejecuta desde Gentle Graph:
 node scripts/bench-gentle-shell.mjs "C:\repos\gentle-shell" "proveedor/modelo" 1
 ```
 
-Usa el identificador exacto de tu modelo. Un par equivale a dos tareas completas y puede consumir saldo. El script detecta Pi en las dependencias de Gentle Shell. Si usas otra instalación, configura `PI_CLI_JS` con la ruta absoluta a su entrada JavaScript. Cada variante recibe el mismo HEAD versionado, la misma tarea de implementación y cuatro comprobaciones externas. La base dispone de las herramientas normales de Pi. La segunda variante añade Gentle Graph. El comparador exige uso observado de las tres herramientas de lectura y registra los nombres de las herramientas activas, llamadas y tiempos individuales.
+Usa el identificador exacto proveedor/modelo. El razonamiento está fijado en `high`; se puede configurar con `GENTLE_BENCH_THINKING`. El clon de Gentle Shell debe tener las dependencias de desarrollo instaladas. El verificador las utiliza después del turno en el worktree aislado. Un par son dos ejecuciones pagadas con el mismo commit, tarea y configuración.
 
-Para una medición más estable, cambia el último argumento a 4. Se alterna el orden tras sortear el primero. Las sesiones son nuevas y el proveedor puede reutilizar su caché. Consulta `summary.json` en la carpeta de resultados que imprime el script. Contiene tokens de entrada, salida, caché leída/escrita, tiempo del agente y del verificador, y reducción porcentual frente a la base. El costo USD es la estimación de Pi cuando está disponible. Un valor nulo significa que no se pudo calcular. Revisa también ambos parches para evaluar calidad, reutilización y las pruebas de regresión añadidas. Los tests de aceptación son específicos de esta tarea.
+El benchmark v2 plantea un problema observable al descubrir subagentes. A utiliza Pi con sus herramientas estándar. B recibe Gentle Graph y decide si lo necesita. El informe registra esa decisión. La verificación incluye precedencia, reglas literales de la API existente, avisos y una lectura por archivo durante el descubrimiento de dos agentes. También ejecuta la suite de overlays de Gentle Shell y el compilador TypeScript sobre cada parche.
+
+La aprobación exige calidad y mediciones completas en ambos brazos, más una reducción estricta de tokens totales y de tiempo del agente en cada par. Un par favorable se etiqueta `pilot-pass`. Dos o más pares favorables, con orden alternado, reciben `passed`. La primera regresión detiene las ejecuciones restantes. Lee `informe-ab.md` y `summary.json` en la ruta que imprime el script. Las cifras son específicas de esta tarea y modelo. El tiempo incluye la espera del proveedor. La telemetría `engine-times.jsonl` de B mide el motor dentro de la extensión y `tool-times.jsonl` mide los intervalos de Pi por ID de llamada, que pueden solaparse.
+
+### Reproducir un par guardado sin consumir tokens
+
+Desde Gentle Graph, indica el clon de Gentle Shell y la carpeta que contiene `results.json`, `baseline` y `graph` del par anterior:
+
+```powershell
+node scripts/replay-shell-pair.mjs "C:\repos\gentle-shell" "C:\ruta\al\pair-1"
+```
+
+El replay usa el SHA de Gentle Shell guardado y el motor del clon actual de Gentle Graph. Extrae las consultas de lectura de la sesión B, las mide con índice nuevo por llamada y luego en secuencia, y guarda tiempos, caracteres y archivos indexados en `replay.json`. Después aplica cada parche a su propio worktree temporal y ejecuta la verificación reforzada. Las operaciones que ocurrieron entre consultas en la sesión original no se reproducen. Cada código de salida y su log permiten distinguir errores de tipos, pruebas fallidas e incidencias de entorno.

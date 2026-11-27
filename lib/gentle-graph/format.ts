@@ -41,7 +41,9 @@ export function formatInspect(matches: InspectResult[]): string {
     `${m.symbol.file}:${m.symbol.line}  ${m.symbol.signature}`,
     field("Implemented by", refs(m.implementations ?? [])),
     ...(m.evidence ?? []).map(s => s.role + " " + s.file + ":" + s.line + " → " + [...(s.via ?? []), s.text ?? s.qualified ?? s.target].join(" → ")),
-    field("Calls", refs(m.callees)), field("Called by", refs(m.callers)), m.snippet
+    field("Calls", refs(m.callees)), field("Called by", refs(m.callers)),
+    // The signature and location are already in the header.
+    m.snippet.split("\n").filter((line,i)=>i!==0 || line.replace(/^\d+:\s*/, "").trim()!==m.symbol.signature).join("\n")
   ]), 3000);
 }
 

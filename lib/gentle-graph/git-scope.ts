@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { isIndexableFile } from "./languages/registry.ts";
+import { isIndexableFile, sourceExtensions } from "./languages/registry.ts";
 
-function gitPaths(root: string, args: string[], grep = false): string[] | null {
+function gitPaths(root: string, args: string[], grep = false, input?: string): string[] | null {
   try {
     return execFileSync("git", args, {
       cwd: root, encoding: "utf8", timeout: 4000, maxBuffer: 32 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"], windowsHide: true
+      input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], windowsHide: true
     }).split("\0").filter(Boolean);
   } catch (error) {
     if (grep && (error as { status?: number }).status === 1) return [];
@@ -49,6 +49,7 @@ export function gitGrepFiles(root: string, literal: string | string[], maxFiles 
   const terms = typeof literal === "string" ? [literal] : literal;
   if (!terms.length) return [];
   const rows = gitPaths(root, ["grep", "--threads=1", "--untracked", "-I", "-z", "-l", "-F",
-    ...terms.flatMap(term => ["-e", term]), "--", "."], true);
+    "-f", "-", "--", ...sourceExtensions.map(ext => ":(glob,icase)**/*" + ext),
+    ":(exclude,glob)**/.gentle-graph/**", ":(exclude,glob)**/node_modules/**"], true, terms.join("\n")+"\n");
   return rows?.filter(isIndexableFile).slice(0, maxFiles) ?? null;
 }

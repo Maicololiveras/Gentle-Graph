@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveImport } from "./languages/registry.ts";
 import { loadArchGuide, updateArchGuide } from "./store.ts";
 import type { GraphIndex, GuideRecommendation, ModuleRecommendation, PatternEntry } from "./types.ts";
 
@@ -62,7 +63,7 @@ export function recommendPath(
   const tokens = tokenizeIntent(intent);
   const guide = loadArchGuide(projectRoot);
 
-  const scoredModules: ModuleRecommendation[] = Object.values(index.files)
+  const ranked: ModuleRecommendation[] = Object.values(index.files)
     .map((fileNode) => {
       const pathLower = fileNode.path.toLowerCase();
       const symbolText = fileNode.symbols
@@ -96,8 +97,26 @@ export function recommendPath(
       };
     })
     .filter((m) => m.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
+
+  const scoredModules = ranked.slice(0, limit);
+  const entry = index.files[ranked[0]?.file];
+  if (scoredModules.length > 1 && entry?.imports.length) {
+    const paths = new Set(Object.keys(index.files));
+    const imports = new Set(entry.imports.map(spec => resolveImport(entry.path, spec, paths)));
+    const calls = new Set(entry.symbols.flatMap(symbol => symbol.calls));
+    // Reserve one visible slot for the strongest intent-matching dependency
+    // whose exported operation is actually called by the leading module.
+    const implementation = ranked.find(module => module.file !== entry.path && imports.has(module.file)
+      && index.files[module.file].exports.some(name => calls.has(name)
+        && tokenizeIntent(name).some(token => tokens.includes(token))));
+    const slot = Math.min(2, scoredModules.length - 1);
+    if (implementation && !scoredModules.slice(0, slot + 1).includes(implementation)) {
+      scoredModules.splice(slot, 0, implementation);
+      const duplicate = scoredModules.indexOf(implementation, slot + 1);
+      scoredModules.splice(duplicate < 0 ? scoredModules.length - 1 : duplicate, 1);
+    }
+  }
 
   const matchingPatterns = guide.patterns.filter((p) => {
     if (p.stale) return false;

@@ -38,12 +38,13 @@ try {
       const sessions = path.join(folder, "sessions");
       fs.mkdirSync(sessions);
       const args = ["--no-extensions","--no-mcp","--no-skills","--no-prompt-templates","--model",model,"--session-dir",sessions];
+      if (process.env.GENTLE_BENCH_THINKING) args.push("--thinking",process.env.GENTLE_BENCH_THINKING);
       const capture = path.join(folder,"capture.mjs");
       const toolsFile = path.join(folder,"tools.json");
-      fs.writeFileSync(capture,`import fs from "node:fs"; export default function(pi) { pi.on("before_agent_start",()=>{fs.writeFileSync(${JSON.stringify(toolsFile)},JSON.stringify(pi.getActiveTools()))});
+      fs.writeFileSync(capture,`import fs from "node:fs"; export default function(pi) { pi.on("before_agent_start",()=>{fs.writeFileSync(${JSON.stringify(toolsFile)},JSON.stringify(pi.getActiveTools()));fs.writeFileSync(${JSON.stringify(path.join(folder,"thinking.json"))},JSON.stringify(pi.getThinkingLevel()))});
 const started=new Map();
 pi.on("tool_execution_start",e=>{started.set(e.toolCallId,performance.now())});
-pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!==undefined){fs.appendFileSync(${JSON.stringify(path.join(folder,"tool-times.jsonl"))},JSON.stringify({tool:e.toolName,ms:performance.now()-start,error:!!e.isError})+"\\n"); started.delete(e.toolCallId)}}); }`);
+pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!==undefined){fs.appendFileSync(${JSON.stringify(path.join(folder,"tool-times.jsonl"))},JSON.stringify({id:e.toolCallId,tool:e.toolName,startMs:start,endMs:performance.now(),ms:performance.now()-start,error:!!e.isError})+"\\n"); started.delete(e.toolCallId)}}); }`);
       args.push("-e",capture);
       let setupMs = 0;
       if (arm === "codegraph") {
@@ -57,7 +58,7 @@ pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!=
       if (arm === "graph") args.push("-e", extension);
       const pi = process.env.PI_CLI_JS;
       const start = performance.now();
-      const agent = spawnSync(pi ? process.execPath : "pi", [...(pi ? [pi] : []), ...args, "-p", prompt], { cwd, encoding:"utf8", maxBuffer:32*1024*1024 });
+      const agent = spawnSync(pi ? process.execPath : "pi", [...(pi ? [pi] : []), ...args, "-p", prompt], { cwd, env:{...process.env,GENTLE_BENCH_ENGINE_TRACE:path.join(folder,"engine-times.jsonl")}, encoding:"utf8", maxBuffer:32*1024*1024 });
       const elapsedMs = performance.now()-start;
       fs.writeFileSync(path.join(folder,"answer.txt"), agent.stdout ?? "");
       fs.writeFileSync(path.join(folder,"agent-stderr.txt"), agent.stderr ?? String(agent.error ?? ""));
@@ -72,6 +73,7 @@ pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!=
       const totals = { input:0, output:0, cacheRead:0, cacheWrite:0, costUSD:0 };
       const models = new Set();
       let failedTurn = false;
+      let searchCalls = 0;
       let turns = 0, measuredTurns = 0, tokens = 0;
       const calls = {};
       for (const file of fs.readdirSync(sessions,{recursive:true}).filter(f => f.endsWith(".jsonl"))) {
@@ -87,14 +89,20 @@ pi.on("tool_execution_end",e=>{const start=started.get(e.toolCallId); if(start!=
             else totals[key] += value;
           }
           if (Number.isFinite(msg.usage?.totalTokens) && msg.usage.totalTokens > 0) { measuredTurns++; tokens += msg.usage.totalTokens; }
-          for (const item of Array.isArray(msg.content) ? msg.content : []) if (item.type === "toolCall") calls[item.name] = (calls[item.name] ?? 0)+1;
+          for (const item of Array.isArray(msg.content) ? msg.content : []) {
+            if (item.type !== "toolCall") continue;
+            calls[item.name] = (calls[item.name] ?? 0)+1;
+            if (["grep","rg","find"].includes(item.name) || (item.name === "bash" && /\b(?:rg|grep|findstr|Select-String)\b/i.test(item.arguments?.command ?? ""))) searchCalls++;
+          }
         }
       }
       const activeTools = fs.existsSync(toolsFile) ? JSON.parse(fs.readFileSync(toolsFile,"utf8")) : [];
       if (!activeTools.length || (arm==="graph" && !activeTools.includes("graph_inspect")) || (arm==="baseline" && activeTools.includes("graph_inspect"))) process.exitCode = 1;
       if (!turns) for (const key of Object.keys(totals)) totals[key]=null;
       if (totals.costUSD === 0) totals.costUSD = null;
-      results[arm] = { ...totals, models:[...models], failedTurn, verificationMs, agentExit:agent.status, setupMs, activeTools, elapsedMs, calls, turns, tokens: turns && measuredTurns === turns ? tokens : null, verificationExit:check.status,
+      const thinkingFile=path.join(folder,"thinking.json");
+      const thinking=fs.existsSync(thinkingFile)?JSON.parse(fs.readFileSync(thinkingFile,"utf8")):null;
+      results[arm] = { searchCalls, thinking, ...totals, models:[...models], failedTurn, verificationMs, agentExit:agent.status, setupMs, activeTools, elapsedMs, calls, turns, tokens: turns && measuredTurns === turns ? tokens : null, verificationExit:check.status,
         qualityReview:null, reusedSymbols:null, duplicatedBlocks:null };
       if (failedTurn || agent.status !== 0 || !turns || check.status !== 0 || (arm === "baseline" && Object.keys(calls).some(k=>k.startsWith("graph_")))) process.exitCode = 1;
       fs.writeFileSync(path.join(out,"results.json"),JSON.stringify({sha,model,order:arms,verify,results},null,2));
