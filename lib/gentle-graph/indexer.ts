@@ -109,10 +109,19 @@ export function listWorkspaceFiles(root: string) {
   const knownFiles = tracked?.files ?? [];
   if (!tracked) walkSourceFiles(root, root, knownFiles);
   const files: string[] = [], manifests: string[] = [], contracts: string[] = [];
+  // Git emits adjacent files from the same directory. Reuse its exclusion decision.
+  let folder = "", skipFolder = false;
   for (const file of knownFiles) {
-    if (!eligible(file)) continue;
-    if (isIndexableFile(file)) files.push(file);
-    else if (isManifest(file)) manifests.push(file);
+    const slash = file.lastIndexOf("/");
+    if (slash + 1 !== folder.length || !file.startsWith(folder)) {
+      folder = file.slice(0,slash+1);
+      skipFolder = !eligible(folder);
+    }
+    if (skipFolder || /\.(min|bundle)\.[cm]?[jt]sx?$/i.test(file)) continue;
+    if (isIndexableFile(file)) {
+      files.push(file);
+      if (file.endsWith("build.gradle.kts") || file.endsWith("Package.swift")) manifests.push(file);
+    } else if (isManifest(file)) manifests.push(file);
     if (isContract(file)) contracts.push(file);
   }
   return { knownFiles: files, manifests, contracts, git: tracked !== null, untracked: tracked?.untracked };

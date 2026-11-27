@@ -9,7 +9,7 @@ export function stripCommentsAndStrings(text: string, style: string): string {
   while (i < text.length) {
     const offset = i;
     const c = text[i];
-    if ((python && c === "#") || (!python && text.startsWith("//", i))) {
+    if (((python || style === "ruby" || style === "php") && c === "#") || (!python && text.startsWith("//", i))) {
       const end = text.indexOf("\n", i);
       i = end < 0 ? text.length : end;
     } else if (!python && text.startsWith("/*", i)) {

@@ -74,3 +74,14 @@ it("detects web, Python, Go, Rust and hexagonal layouts from scoped evidence", t
   for (const label of ["Feature-Sliced Design","NestJS Modules","Go standard layout","Rust Workspace","Hexagonal (Ports & Adapters)","FastAPI routers","Django apps"]) assert.ok(p.architectures.includes(label),label);
   assert.ok(p.frameworks.includes("Next.js"));
 });
+
+it("detects Spring Boot, Rails, Laravel and Symfony from scoped manifests", () => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"graph-manifests-"));
+  try {
+    const manifests={"pom.xml":"<project><groupId>org.springframework.boot</groupId></project>",
+      "composer.json":JSON.stringify({require:{"laravel/framework":"*","symfony/framework-bundle":"*"}}),"Gemfile":"gem 'rails'"};
+    for (const [file,source] of Object.entries(manifests)) fs.writeFileSync(path.join(root,file),source);
+    const guide=graphGuide("modules",{projectRoot:root});
+    for(const name of ["Spring Boot","Laravel","Symfony","Rails"]) assert(guide.architecture.includes(name),name);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});

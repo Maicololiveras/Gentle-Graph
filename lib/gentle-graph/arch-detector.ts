@@ -12,7 +12,7 @@ export interface ArchitectureProfile {
 }
 
 export function isManifest(file: string) {
-  return /(?:\.csproj|(?:^|\/)(?:package\.json|pyproject\.toml|requirements\.txt|Cargo\.toml|go\.mod))$/i.test(file);
+  return /(?:\.csproj|(?:^|\/)(?:package\.json|pyproject\.toml|requirements\.txt|Cargo\.toml|go\.mod|pom\.xml|build\.gradle(?:\.kts)?|composer\.json|Gemfile))$/i.test(file);
 }
 
 function readSmall(root: string, file: string) {
@@ -70,6 +70,17 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   if (profile.slices.some(s => /(?:^|\/)modules\//i.test(s))) arch.push("Modular Monolith");
   const packages = new Set<string>();
   for (const { file, text } of contents) {
+    if (/(?:pom\.xml|build\.gradle(?:\.kts)?)$/.test(file) && /org\.springframework\.boot|spring-boot-starter/.test(text)) packages.add("Spring Boot");
+    if (file.endsWith("composer.json")) {
+      try {
+        const manifest=JSON.parse(text);
+        for(const name of Object.keys({...manifest.require,...manifest["require-dev"]})) {
+          if(name==="laravel/framework") packages.add("Laravel");
+          if(name==="symfony/framework-bundle") packages.add("Symfony");
+        }
+      } catch { /* An unfinished manifest can still be edited. */ }
+    }
+    if (file.endsWith("Gemfile") && /^\s*gem\s+["']rails["']/m.test(text)) packages.add("Rails");
     if (/\.csproj$/i.test(file)) {
       const xml = text.replace(/<!--[\s\S]*?-->/g, "");
       const refs = (kind: string) => [...xml.matchAll(new RegExp("<" + kind + "\\b[^>]*?\\bInclude\\s*=\\s*[\"']([^\"']+)[\"']", "gi"))].map(m => m[1]);
@@ -93,6 +104,9 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
     [/^react$/,"React"], [/^next$/,"Next.js"], [/^@angular\/core$/,"Angular"],
     [/^@nestjs\/core$/,"NestJS"], [/^FastAPI$/i,"FastAPI"], [/^Django$/i,"Django"]
   ] as const) if ([...packages].some(pkg => pattern.test(pkg))) profile.frameworks.push(label);
+  for (const name of ["Spring Boot","Laravel","Symfony","Rails"]) if(packages.has(name)) profile.frameworks.push(name);
+  if (signals.includes("Spring Boot") && !profile.frameworks.includes("Spring Boot")) profile.frameworks.push("Spring Boot");
+  if (/(?:^|\/)routes\/(?:[^\n]*\/)?\+(?:page(?:\.server\.ts|\.svelte)|layout\.svelte)$/m.test(inventory)) arch.push("SvelteKit");
   if (/\.xaml$/im.test(inventory)) {
     if (has("viewmodel","viewmodels") || signals.includes("MVVM") || /(?:VM|ViewModel)\.cs$/m.test(inventory)) arch.push("WPF MVVM");
     else if (has("presenters")) arch.push("WPF MVP");

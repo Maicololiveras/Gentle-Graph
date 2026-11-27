@@ -257,3 +257,26 @@ it("returns a compact opt-in subgraph and excludes build directories", async t =
   assert(formatGuide(guide).length<=3000);
   assert.equal(graphGuide("billing",opts).subgraph,undefined);
 });
+
+for (const fixture of [
+  {ext:"java",port:"package demo;\npublic interface Port {}",impl:"package demo;\nimport demo.Port;\n@Service\npublic class Db implements Port {\n public void run() { write(); }\n}",consumer:"class Client {\n public void run(Port p) {}\n}",test:"src/test/java/DbIT.java"},
+  {ext:"php",port:"<?php\nnamespace Demo;\ninterface Port {}",impl:"<?php\nuse Demo\\Port;\nclass Db implements Port {\n public function run() { write(); }\n}",consumer:"<?php\nclass Client {\n function usePort(Port $p) {}\n}",test:"tests/DbTest.php"},
+  {ext:"rb",port:"module Port\nend",impl:"require_relative 'port'\nclass Db\n include Port\n def run\n  write()\n end\nend",consumer:"class Client\n def run\n  Port.call()\n end\nend",test:"spec/db_spec.rb"}
+]) it(fixture.ext+" resolves declared contracts separately from consumers", t=>{
+  const opts=project(t,{["port."+fixture.ext]:fixture.port,["db."+fixture.ext]:fixture.impl,["client."+fixture.ext]:fixture.consumer});
+  assert.deepEqual(graphInspect("Port",opts)[0].implementations.map(s=>s.name),["Db"]);
+  const parsed=parseSourceFile(".", "db."+fixture.ext,fixture.impl);
+  assert(parsed.symbols.some(s=>s.name==="Db.run" && s.calls.includes("write")));
+  assert(isTestFile(fixture.test));
+});
+it("SvelteKit links component use and script imports through $lib",async t=>{
+  const opts=project(t,{"src/routes/+page.svelte":'<script lang="ts">\nimport Card from "$lib/Card.svelte";\nexport function loadData() { return fetchData(); }\n</script>\n<Card />',
+    "src/lib/Card.svelte":"<article>Card</article>", "src/routes/+page.server.ts":"export function load() {}"});
+  const page=graphInspect("src/routes/+page.svelte#+page",opts)[0];
+  assert(page.callees.some(c=>c.name==="Card"));
+  assert.deepEqual(page.implementations,[]);
+  assert(graphGuide("page",opts).architecture.includes("SvelteKit"));
+  const {resolveImport}=await import("../lib/gentle-graph/languages/registry.ts");
+  assert.equal(resolveImport(page.symbol.file,"$lib/Card.svelte",new Set(["src/lib/Card.svelte"])),"src/lib/Card.svelte");
+  assert(isTestFile("component.test.svelte"));
+});
