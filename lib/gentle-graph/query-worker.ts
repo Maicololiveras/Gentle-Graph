@@ -56,9 +56,12 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   if(cached!==undefined)return cached;
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
   let text:string,partial=false,mode:string,indexed:number;
+  const timings=prepared && initial.profileStart!==undefined ? {scope:0,query:0,flush:0} : undefined;
+  const started=performance.now();
   beginGraphWrites(q.root);
   try {
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
+  if(timings)timings.scope=performance.now()-started;
   mode=scope.degraded?"degraded":scope.mode;
   if(q.kind==="guide"){
     text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache,previews));
@@ -74,7 +77,12 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   }
   indexed=Object.keys(scope.index.files).length;
   } finally {
+    if(timings)timings.query=performance.now()-started-timings.scope;
     try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+  }
+  if(timings){
+    timings.flush=performance.now()-started-timings.scope-timings.query;
+    console.error(JSON.stringify({graphProfile:"worker",kind:q.kind,...timings}));
   }
   const reply={text,partial,mode,indexed};
   if(state && !partial && !degraded){
