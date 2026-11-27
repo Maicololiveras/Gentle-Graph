@@ -46,3 +46,11 @@ node scripts/bench-jit.mjs 30000
 ```
 
 El cronómetro incluye la consulta, el descubrimiento de rutas y la escritura del índice. La creación del repositorio de prueba y el arranque de Node quedan fuera. Para validar cambios, ejecuta `pnpm test`. El chequeo `pnpm typecheck` usa el compilador TypeScript, tipos de Node, Pi y TypeBox del entorno de desarrollo de Gentle Shell.
+
+### Lenguajes, WPF y guía arquitectónica
+
+El índice reconoce TS/JS, Python, Go, Rust, C# y XAML. Puedes consultar métodos por nombre cualificado, como `Store.Get` o `Client::fetch`. En WPF, prueba `graph_impact("SaveOrderAsync")` para seguir el comando generado por el Toolkit hasta la vista que lo enlaza. Las dependencias por interfaz indican consumidores potenciales. El análisis es estático y funciona sin MSBuild ni intérprete de Python.
+
+La guía combina carpetas, manifiestos y símbolos ya indexados para reconocer capas, slices y patrones de UI. El perfil por worktree se guarda en `.gentle-graph/profile.json`. Para soluciones .NET incluye los paquetes y las referencias entre proyectos declaradas en los archivos `.csproj`. Las reglas de `guide.json` y los contratos del proyecto tienen prioridad sobre las fronteras inferidas.
+
+Por defecto se usa TypeScript del host cuando está disponible. Establece `GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT=1` para usar el compilador de un proyecto de confianza o `GENTLE_GRAPH_DISABLE_TOOLCHAINS=1` para usar solo el parser léxico.

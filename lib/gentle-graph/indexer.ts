@@ -1,10 +1,10 @@
-import { gitDirtyFiles, gitListIndexableFiles } from "./git-scope.ts";
+import { isManifest } from "./arch-detector.ts";
+import { gitDirtyFiles, gitInventory } from "./git-scope.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isIndexableFile, parseGenericFile } from "./parser-generic.ts";
-import { parseSourceFile } from "./parser-ts.ts";
-import { invalidateLookup, resolveImport, loadArchGuide, loadGraphIndex, saveArchGuide, saveGraphIndex } from "./store.ts";
+import { isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
+import { invalidateLookup, loadArchGuide, loadGraphIndex, saveArchGuide, saveGraphIndex } from "./store.ts";
 import type { GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
@@ -13,7 +13,7 @@ const MAX_SOURCE_BYTES = 256 * 1024;
 const IGNORED_DIRS = new Set([
   ".git",
   ".gentle-graph",
-  "node_modules",
+  "node_modules", "bin", "obj", ".vs", "packages", "TestResults",
   "dist",
   "build",
   "coverage",
@@ -42,7 +42,7 @@ function walkSourceFiles(root: string, current: string, acc: string[]): void {
     if (!entry.isFile()) continue;
     const full = path.join(current, entry.name);
     const rel = path.relative(root, full).split(path.sep).join("/");
-    if (isIndexableFile(rel) && !/\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(rel)) {
+    if ((isIndexableFile(rel) || isManifest(rel) || isContract(rel)) && !/\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(rel)) {
       acc.push(rel);
     }
   }
@@ -91,18 +91,27 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
 }
 
 function eligible(file: string): boolean {
-  return !/(?:^|\/)(?:\.git|\.gentle-graph|node_modules|dist|build|coverage|\.next|\.turbo|vendor|target|__pycache__)\//.test(file) &&
+  return !/(?:^|\/)(?:\.git|\.gentle-graph|node_modules|bin|obj|\.vs|packages|TestResults|dist|build|coverage|\.next|\.turbo|vendor|target|__pycache__)\//.test(file) &&
     !/\.(min|bundle)\.[cm]?[jt]sx?$/i.test(file);
 }
 
+const isContract = (file: string) => /(?:^|\/)contracts\/.*\.(?:md|txt|ya?ml|json)$/i.test(file);
+
 export function listWorkspaceFiles(root: string) {
-  const tracked = gitListIndexableFiles(root);
-  const knownFiles = tracked ?? [];
+  const tracked = gitInventory(root);
+  const knownFiles = tracked?.files ?? [];
   if (!tracked) walkSourceFiles(root, root, knownFiles);
-  return { knownFiles: knownFiles.filter(eligible), git: tracked !== null };
+  const files: string[] = [], manifests: string[] = [], contracts: string[] = [];
+  for (const file of knownFiles) {
+    if (!eligible(file)) continue;
+    if (isIndexableFile(file)) files.push(file);
+    else if (isManifest(file)) manifests.push(file);
+    if (isContract(file)) contracts.push(file);
+  }
+  return { knownFiles: files, manifests, contracts, git: tracked !== null, untracked: tracked?.untracked };
 }
 
-type Scope = { knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
+type Scope = { manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
 const scopes = new WeakMap<GraphIndex, { scope: Scope; time: number; stalePatterns: number }>();
 
 export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean } = {}) {
@@ -130,7 +139,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     }
     // Generated single-line JS occasionally ships without a .min.js suffix.
     if (/\.[cm]?jsx?$/i.test(file) && content.length >= 8192 && content.split(/\r?\n/).some(line => line.length >= 8192)) return;
-    const parsed = options.preview ? parseGenericFile(file, content) : parseSourceFile(root, file, content);
+    const parsed = parseSourceFile(root, file, content, options.preview);
     stats.updated++;
     return index.files[file] = { ...parsed, ...(options.preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
   }
@@ -149,7 +158,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
       }
       if (node && depth < (options.followImports ?? 0)) {
         for (const source of node.imports) {
-          const target = resolveImport(file, source, candidate => paths.has(candidate));
+          const target = resolveImport(file, source, paths);
           if (target) next.add(target);
         }
       }
@@ -172,9 +181,9 @@ export function syncGraphIndex(projectRoot: string, options: boolean | { fullSyn
   if (!force && previous?.scope.mode === "full" && previous.scope.knownFiles.length <= 500 && performance.now() - previous.time < SYNC_TTL_MS) {
     return { index, ...previous.scope, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
   }
-  const { knownFiles, git } = listWorkspaceFiles(root);
-  const dirty = git && !force && knownFiles.length > 500 ? gitDirtyFiles(root) : null;
-  const scope: Scope = { knownFiles, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
+  const { knownFiles, git, contracts, manifests, untracked } = listWorkspaceFiles(root);
+  const dirty = git && !force && knownFiles.length > 500 ? gitDirtyFiles(root, untracked) : null;
+  const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
   const patterns = loadArchGuide(root).patterns.map(p => p.entry.split("#")[0]);
   const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];
   const { stats } = indexSpecificFiles(root, files, { paths: scope.paths, preview: scope.mode === "jit" });

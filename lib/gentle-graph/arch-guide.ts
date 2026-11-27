@@ -19,7 +19,8 @@ export function tokenizeIntent(text: string): string[] {
     .replace(/[\u0300-\u036f]/g, "")
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length >= 3 && !STOP_WORDS.has(t));
-  return [...new Set(raw)];
+  const aliases: Record<string, string> = { pantalla: "view", vista: "view", comando: "command", ordenes: "order", servicio: "service" };
+  return [...new Set(raw.flatMap(word => aliases[word] ? [word, aliases[word]] : [word]))];
 }
 
 function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {

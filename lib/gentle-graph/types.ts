@@ -6,7 +6,7 @@ export type SymbolKind =
   | "const"
   | "method"
   | "struct"
-  | "trait";
+  | "trait" | "record" | "enum" | "property" | "event";
 
 export interface CodeSymbol {
   id: string;
@@ -18,12 +18,14 @@ export interface CodeSymbol {
   exported: boolean;
   signature: string;
   calls: string[];
+  contracts?: string[];
   reuseTag?: string;
   domainTag?: string;
   boundaryTag?: string;
 }
 
 export interface FileNode {
+  namespace?: string;
   preview?: boolean;
   path: string;
   language: string;
@@ -53,6 +55,8 @@ export interface PatternEntry {
 }
 
 export interface ArchGuideStore {
+  rules?: string[];
+  boundaries?: string[];
   version: number;
   patterns: PatternEntry[];
 }
@@ -97,6 +101,9 @@ export interface ModuleRecommendation {
 }
 
 export interface GuideRecommendation {
+  architecture?: string;
+  boundaries?: string[];
+  slice?: string;
   intent: string;
   projectRoot: string;
   recommendedModules: ModuleRecommendation[];

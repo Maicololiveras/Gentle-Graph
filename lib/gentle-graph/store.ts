@@ -1,3 +1,4 @@
+import { resolveImport } from "./languages/registry.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type { ArchGuideStore, CodeSymbol, GraphIndex } from "./types.ts";
@@ -17,12 +18,9 @@ type GraphLookup = {
 };
 
 const lookupCache = new WeakMap<GraphIndex, GraphLookup>();
-const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
-export function resolveImport(file: string, source: string, exists: (candidate: string) => boolean) {
-  if (!source.startsWith(".")) return undefined;
-  const base = path.posix.join(path.posix.dirname(file), source);
-  const stem = base.replace(/\.(?:[cm]?js|jsx)$/, "");
-  return [base, ...extensions.map(ext => stem + ext), ...extensions.map(ext => base + "/index" + ext)].find(exists);
+export function symbolNames(name: string): string[] {
+  const short = name.split(/::|\./).at(-1)!;
+  return name === short ? [name] : [name, short];
 }
 
 export function getLookup(index: GraphIndex): GraphLookup {
@@ -39,13 +37,14 @@ export function getLookup(index: GraphIndex): GraphLookup {
   }
   for (const symbol of symbols) {
     symbolById.set(symbol.id, symbol);
-    append(symbolByName, symbol.name, symbol);
+    for (const name of symbolNames(symbol.name)) append(symbolByName, name, symbol);
     for (const call of symbol.calls) append(callersByName, call, symbol);
   }
+  const paths = new Set(Object.keys(index.files));
   const importers = new Map<string, Set<string>>();
   for (const file of Object.values(index.files)) {
     for (const source of file.imports) {
-      const match = resolveImport(file.path, source, candidate => Object.hasOwn(index.files, candidate));
+      const match = resolveImport(file.path, source, paths);
       if (!match) continue;
       const parents = importers.get(match) ?? new Set<string>();
       parents.add(file.path);
@@ -92,7 +91,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   if (fs.existsSync(filePath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as GraphIndex;
-      if (parsed && parsed.version === 1 && parsed.files) {
+      if (parsed && parsed.version === 2 && parsed.files) {
         memoryIndexCache.set(resolved, parsed);
         return parsed;
       }
@@ -102,7 +101,7 @@ export function loadGraphIndex(projectRoot: string): GraphIndex {
   }
 
   const fresh: GraphIndex = {
-    version: 1,
+    version: 2,
     projectRoot: resolved,
     updatedAt: new Date(0).toISOString(),
     files: {}
@@ -125,8 +124,8 @@ export function loadArchGuide(projectRoot: string): ArchGuideStore {
   if (fs.existsSync(filePath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as ArchGuideStore;
-      if (parsed && parsed.version === 1 && Array.isArray(parsed.patterns)) {
-        return parsed;
+      if (parsed && parsed.version === 1 && (parsed.patterns === undefined || Array.isArray(parsed.patterns))) {
+        return { ...parsed, patterns: parsed.patterns ?? [] };
       }
     } catch {
       // Fallback limpio

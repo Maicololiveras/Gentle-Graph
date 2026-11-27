@@ -17,6 +17,9 @@ export function formatGuide(g: GuideRecommendation): string {
   return compact([
     ...g.matchingPatterns.map(p => `Reuse ${p.entry} — ${p.guidance}`),
     field("Docs", g.relevantDocs),
+    g.architecture ? "ARCH: " + g.architecture : "",
+    field("BOUNDARIES", g.boundaries ?? []),
+    g.slice ?? "",
     ...g.recommendedModules.map(m => [m.file, ...m.reuseNotes, ...m.boundaries].join(" · ")),
     field("Stale", g.stalePatternsWarning),
     ...(!g.matchingPatterns.length && !g.recommendedModules.length ? g.suggestedPath : [])

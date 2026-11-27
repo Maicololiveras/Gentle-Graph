@@ -1,9 +1,11 @@
+import { detectArchitecture } from "./arch-detector.ts";
+import { isTestFile } from "./languages/registry.ts";
 import fs from "node:fs";
 import path from "node:path";
 import { recommendPath, registerPattern, tokenizeIntent } from "./arch-guide.ts";
 import { gitGrepFiles } from "./git-scope.ts";
 import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
-import { getLookup, loadArchGuide } from "./store.ts";
+import { getLookup, loadArchGuide, symbolNames } from "./store.ts";
 import type {
   CodeSymbol,
   GraphStatus,
@@ -36,7 +38,15 @@ function searchFrontier(root: string, scope: ReturnType<typeof syncGraphIndex>, 
   let complete = scope.mode === "full";
   return (terms: Iterable<string>): boolean => {
     if (complete) return false;
-    const pending = [...new Set(terms)].filter(term => term && !searched.has(term));
+    const literals = new Set<string>();
+    for (const term of terms) {
+      for (const name of symbolNames(term)) {
+        literals.add(name);
+        if (name.endsWith("Command")) literals.add(name.slice(0, -7));
+        if (/^[A-Z]/.test(name)) literals.add(name[0].toLowerCase() + name.slice(1));
+      }
+    }
+    const pending = [...literals].filter(term => term && !searched.has(term));
     if (!pending.length) return false;
     for (const term of pending) searched.add(term);
     for (let offset = 0; offset < pending.length; offset += 32) {
@@ -73,7 +83,7 @@ export function graphGuide(
     const ranked: { file: string; score: number }[] = [];
     for (const file of scope.knownFiles) {
       const name = file.toLowerCase();
-      let score = Number(referenced.has(file)) + Number(dirty.has(file));
+      let score = Number(referenced.size > 0 && referenced.has(file)) + Number(dirty.size > 0 && dirty.has(file));
       for (const token of tokens) if (name.includes(token)) score += 4;
       if (!score || (ranked.length === 15 && score <= ranked[14].score)) continue;
       const pos = ranked.findIndex(item => item.score < score);
@@ -82,7 +92,35 @@ export function graphGuide(
     }
     indexSpecificFiles(resolved, ranked.map(row => row.file), { paths: scope.paths, followImports: 1, preview: true });
   }
-  return recommendPath(resolved, index, intent, options.limit ?? 5);
+  const guide = recommendPath(resolved, index, intent, options.limit ?? 5);
+  const signals = new Set<string>();
+  for (const node of Object.values(index.files)) {
+    if (node.language !== "csharp") continue;
+    for (const symbol of node.symbols) {
+      if (/^Add(?:Scoped|Singleton|Transient)</.test(symbol.name)) signals.add("DI");
+      if (symbol.contracts?.some(c => /^(?:IRequestHandler|INotificationHandler)$/.test(c))) signals.add("CQRS");
+    }
+  }
+  const profile = detectArchitecture(resolved, scope.knownFiles, scope.manifests, [...signals].sort());
+  const labels = profile.architectures.join(" + ");
+  if (labels || profile.frameworks.length) {
+    guide.architecture = [labels, profile.frameworks.length ? "(" + profile.frameworks.join(", ") + ")" : ""].filter(Boolean).join(" ");
+    if (profile.layers.length > 1) guide.architecture += " | layers: " + profile.layers.join(", ");
+  }
+  const rules = loadArchGuide(resolved);
+  const manual = [rules.boundaries, rules.rules].flatMap(items => Array.isArray(items) ? items.filter(rule => typeof rule === "string") : []);
+  if (scope.contracts.length) manual.push("Consultar " + scope.contracts.slice(0, 3).join(", "));
+  const explicit = manual.length || guide.matchingPatterns.length || guide.recommendedModules.some(m => m.boundaries.length);
+  guide.boundaries = explicit ? manual : profile.boundaries;
+  if (!explicit) {
+    const tokens = tokenizeIntent(intent);
+    const slice = profile.slices.find(s => tokens.some(t => path.posix.basename(s).toLowerCase().includes(t)));
+    if (slice) {
+      guide.slice = "Ubica el caso de uso en " + slice;
+      guide.suggestedPath.unshift(guide.slice);
+    }
+  }
+  return guide;
 }
 
 /**
@@ -150,7 +188,7 @@ export function graphInspect(
 
     const callers: SymbolRef[] = [];
     const seenCallers = new Set<string>([rootSym.id]);
-    let callerTargets = new Set<string>([rootSym.name]);
+    let callerTargets = new Set<string>(symbolNames(rootSym.name));
 
     for (let hop = 1; hop <= maxDepth; hop++) {
       const nextTargets = new Set<string>();
@@ -159,7 +197,7 @@ export function graphInspect(
         if (candidate.calls.some((c) => callerTargets.has(c))) {
           seenCallers.add(candidate.id);
           callers.push({ name: candidate.name, file: candidate.file, line: candidate.line, hop });
-          nextTargets.add(candidate.name);
+          for (const key of symbolNames(candidate.name)) nextTargets.add(key);
         }
       }
       callerTargets = nextTargets;
@@ -197,7 +235,7 @@ export function graphImpact(
     const byId = symbolById.get(target);
     const roots = byId ? [byId] : index.files[target]?.symbols ?? symbolByName.get(target) ?? [];
     const seen = new Set(roots.map(s => s.id));
-    let frontier = roots.length ? roots.map(s => s.name) : [target];
+    let frontier = roots.length ? roots.flatMap(s => [...symbolNames(s.name), ...(s.contracts ?? [])]) : [target];
     const directCallers: SymbolRef[] = [];
     const transitiveCallers: SymbolRef[] = [];
     for (let hop = 1; frontier.length; hop++) {
@@ -206,7 +244,7 @@ export function graphImpact(
         for (const s of callersByName.get(name) ?? []) {
           if (seen.has(s.id)) continue;
           seen.add(s.id);
-          next.add(s.name);
+          for (const key of symbolNames(s.name)) next.add(key);
           (hop === 1 ? directCallers : transitiveCallers).push({ name: s.name, file: s.file, line: s.line, hop });
         }
       }
@@ -216,6 +254,7 @@ export function graphImpact(
     const origins = new Set(roots.map(s => s.file));
     if (Object.hasOwn(index.files, target)) origins.add(target);
     const dependentFiles = new Set([...directCallers, ...transitiveCallers].flatMap(c => c.file ? [c.file] : []));
+    for (const s of roots) if (s.kind === "property") dependentFiles.add(s.file);
     const visited = new Set([...origins, ...dependentFiles]);
     for (const file of visited) {
       for (const dependent of importers.get(file) ?? []) {
@@ -225,11 +264,12 @@ export function graphImpact(
     }
     const affectedFiles = [...dependentFiles];
 
-    return { origins, affectedFiles, directCallers, transitiveCallers };
+    return { origins, affectedFiles, directCallers, transitiveCallers, contracts: roots.flatMap(s => s.contracts ?? []) };
   }
   let closure = traverse();
   while (scope.mode === "jit") {
     const terms = [...closure.directCallers, ...closure.transitiveCallers].map(c => c.name);
+    terms.push(...closure.contracts);
     for (const file of [...closure.origins, ...closure.affectedFiles]) {
       const stem = path.posix.parse(file).name;
       // Directory imports can resolve to index.ts even via "." or "..".
@@ -242,7 +282,7 @@ export function graphImpact(
   const stems = [target, ...origins, ...affectedFiles].map((file) => path.basename(file, path.extname(file)).toLowerCase());
   const relatedTests = files.filter(
     (f) =>
-      (f.includes("test") || f.includes("spec")) &&
+      isTestFile(f) &&
       stems.some((stem) => f.toLowerCase().includes(stem))
   );
 
