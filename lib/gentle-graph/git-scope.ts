@@ -319,9 +319,13 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         grepImpactProjection(root,inspectTerm!,true),
         plainCheckoutText(root,tracked)
       ]).then(([result,plain])=>plain?result:null).catch(()=>null) : undefined;
+      const literal=simple && !combined ? Promise.all([
+        requireGitPaths(root,grepArgs.map(arg=>arg==="--untracked"?"--cached":arg),inspectTerm+"\n"),
+        plainCheckoutText(root,tracked)
+      ]).then(([rows,plain])=>plain?rows?.filter(isIndexableFile):null).catch(()=>null) : null;
       const [state, hits, projection] = await Promise.all([
-        impact ? inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)) : gitSnapshot(root),
-        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
+        inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)),
+        combined ? combined.then(result=>result?.hits) : literal,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;

@@ -96,10 +96,14 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
     group.end=i+1;
     if(bytes.readUInt32BE(offsets[i]+8)>=second)group.racy=true;
   }
-  if(!groups.some(entry=>entry.racy))return false;
+  const racyCount=groups.reduce((count,g)=>count+(g.racy?g.end-g.start:0),0);
+  if(!racyCount)return false;
+  // When most files need precise stats, verify the small remainder in the
+  // same pass. Starting diff-files would reread and preload the entire index.
+  const verifyAll=racyCount>=files.length*0.75;
   const prefix=root+path.sep;
   for(const {name,start,end,racy} of groups){
-    if(!racy){remaining.add(name);continue;}
+    if(!racy && !verifyAll){remaining.add(name);continue;}
     folders.add(name);
     for(let i=start;i<end;i++){
       const at = offsets[i];
