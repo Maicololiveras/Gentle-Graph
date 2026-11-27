@@ -12,9 +12,13 @@ import {formatGuide,formatInspect,formatImpact} from "./format.ts";
 import type {Query} from "./query-session.ts";
 
 // Git discovers the first worktree scope concurrently on the parent thread.
-const initial = workerData as Query;
+const initial = workerData as Query & {profileStart?:number};
+const profile = initial.kind === "inspect" && initial.profileStart !== undefined;
+const workerReady = profile ? performance.now() : 0;
+let compilerEnd = workerReady;
 if (initial.kind !== "guide" && existsSync(path.join(initial.root, "tsconfig.json"))) {
   workspaceCompiler(initial.root);
+  if (profile) compilerEnd = performance.now();
 }
 
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
@@ -45,8 +49,16 @@ async function handle(q:Query,prepared?:Prepared){
   }
   return text;
 }
-parentPort.on("message",async({query,prepared}:{query:Query;prepared?:Prepared})=>{
-  try { parentPort.postMessage({text:await handle(query,prepared)}); }
+parentPort.on("message",async({query,prepared,inventoryReady}:{query:Query;prepared?:Prepared;inventoryReady?:number})=>{
+  try {
+    const received = profile ? performance.now() : 0;
+    const text = await handle(query,prepared);
+    if(profile && prepared && inventoryReady !== undefined) {
+      const start = initial.profileStart!;
+      console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,compilerEnd,received,end:performance.now()}));
+    }
+    parentPort.postMessage({text});
+  }
   catch(e){if(query.kind==="impact" && e instanceof GitScopeError && e.timedOut) parentPort.postMessage({timedOut:true});
     else parentPort.postMessage({error:String(e)});}
 });

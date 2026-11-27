@@ -27,7 +27,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
   const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
-  const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:query});
+  const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:{...query, profileStart:started}});
   return new Promise((resolve, reject) => {
     let checkpoint = "Partial impact (time budget reached)\n" + query.term;
     const timer = query.kind === "impact" ? setTimeout(() => {
@@ -70,7 +70,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
       // Run the first Git commands while Node loads the language adapters in the worker.
       const prepared = cold ? await prepareColdScope(query.root, query.kind === "inspect" ? query.term : undefined) : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
-      if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
+      if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
     }
     send().catch(err => {
       // Git preparation may fail while the new worker is still booting. Keep

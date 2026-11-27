@@ -8,6 +8,7 @@ import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveG
 import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
+const profileIndex = process.env.GENTLE_GRAPH_PROFILE === "1";
 const MAX_SOURCE_BYTES = 256 * 1024;
 
 const IGNORED_DIRS = new Set([
@@ -196,7 +197,9 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     }
     // Generated single-line JS occasionally ships without a .min.js suffix.
     if (/\.[cm]?jsx?$/i.test(file) && likelyMinified(content)) return;
+    const parseStart = profileIndex ? performance.now() : 0;
     const parsed = parseSourceFile(root, file, content, preview);
+    if (profileIndex) console.error(JSON.stringify({graphProfile:"parse",file,start:parseStart,end:performance.now()}));
     changed.add(file);
     stats.updated++;
     return index.files[file] = { ...parsed, ...(preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
@@ -229,7 +232,9 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
   if (options.deferSave) {
     for (const file of changed) options.deferSave.add(file);
   } else if (changed.size) {
+    const saveStart = profileIndex ? performance.now() : 0;
     try { saveGraphIndex(root, index, changed); } catch { /* Keep read-only worktrees usable. */ }
+    if (profileIndex) console.error(JSON.stringify({graphProfile:"save",start:saveStart,end:performance.now()}));
   }
   stats.durationMs = performance.now() - start;
   return { index, stats };
