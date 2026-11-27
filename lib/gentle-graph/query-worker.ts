@@ -96,7 +96,10 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const reply={text,partial,mode,indexed};
   if(state && !partial && !degraded){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
-    state.results.set(key+indexStamp(q.root),reply);
+    // During first publication, use the observed pre-write stamp. The publish
+    // callback adds the committed stamp. An NTFS stat racing mkdir/link can
+    // otherwise put the background write back on the response path.
+    state.results.set(publication ? cacheKey : key+indexStamp(q.root),reply);
   }
   if(publication){
     publishing=publication.catch(error=>{

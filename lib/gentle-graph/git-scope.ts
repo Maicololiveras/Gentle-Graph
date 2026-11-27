@@ -129,14 +129,19 @@ export function gitInventory(root:string):Inventory|null {
 export function gitWorkspaceInventory(root: string): Inventory | null {
   const layout = rootLayout(root);
   const before = layout && process.platform === "linux" ? fs.statSync(path.join(layout.dir,"index"),{bigint:true,throwIfNoEntry:false}) : undefined;
+  const indexSecond=before ? Number(before.mtimeNs/1000000000n) : Infinity;
+  let timestampTies=0;
   const offsets: number[] = [];
   let bytes: Buffer | undefined;
   const tracked = readTrackedIndexPaths(root, layout, process.platform === "linux" ? (_file, index, offset) => {
     bytes = index;
     offsets.push(offset);
+    if(index.readUInt32BE(offset+8)>=indexSecond)timestampTies++;
   } : undefined);
   if (!tracked) return gitInventory(root);
-  const unchecked = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
+  // For broad timestamp ties, native Git checks the worktree in parallel.
+  // Reserve exact per-folder lstat checks for a small racy subset.
+  const unchecked = timestampTies>0 && timestampTies<tracked.length/2 && layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
   if (unchecked && layout) {
     const remaining = unchecked.length ? gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",...unchecked]) : [];
 
