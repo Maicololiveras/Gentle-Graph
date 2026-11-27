@@ -22,6 +22,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const { index } = scope;
   if (scope.mode === "jit") {
     const tokens = tokenizeIntent(intent);
+    if (tokens.includes("configuration")) tokens.push("config");
     const patterns = loadArchGuide(resolved).patterns;
     const referenced = new Set(patterns.flatMap(p => [p.entry.split("#")[0], ...p.files]));
     const dirty = new Set(scope.dirty);
@@ -35,7 +36,9 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       ranked.splice(pos < 0 ? ranked.length : pos, 0, { file, score });
       if (ranked.length > 15) ranked.pop();
     }
-    indexSpecificFiles(resolved, ranked.map(row => row.file), { paths: scope.paths, followImports: 1, preview: true });
+    indexSpecificFiles(resolved, ranked.map(row => row.file), {paths:scope.paths,preview:true});
+    const seeds=recommendPath(resolved,index,intent,3).recommendedModules;
+    indexSpecificFiles(resolved,seeds.map(m=>m.file),{paths:scope.paths,followImports:1,preview:true});
   }
   const guide = recommendPath(resolved, index, intent, options.limit ?? 5);
   const signals = new Set<string>();
@@ -75,6 +78,12 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const words=tokenizeIntent(intent);
   const lookup=getLookup(index);
   const neighborExports = new Set(guide.recommendedModules.slice(1,3).flatMap(m=>index.files[m.file].exports));
+  const testByStem=new Map<string,string>();
+  for(const file of scope.knownFiles){
+    if(!isTestFile(file))continue;
+    const stem=path.posix.parse(file).name.replace(/(?:[._-](?:test|spec))$/i,"");
+    if(!testByStem.has(stem))testByStem.set(stem,file);
+  }
   for (const module of guide.recommendedModules.slice(0,3)) {
     const node=index.files[module.file];
     const operations=node.symbols.filter(s=>s.exported && (s.kind==="function" || s.kind==="method" || s.kind==="const"));
@@ -97,7 +106,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     }
     const stem=path.posix.parse(module.file).name;
     module.associatedTest=callers.find(s=>isTestFile(s.file))?.file ??
-      scope.knownFiles.find(f=>path.posix.parse(f).name.replace(/(?:[._-](?:test|spec))$/i,"")===stem && isTestFile(f));
+      testByStem.get(stem);
   }
   if (options.includeSnippets) {
     const tokens = tokenizeIntent(intent);

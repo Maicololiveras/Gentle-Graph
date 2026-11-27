@@ -24,7 +24,7 @@ export function tokenizeIntent(text: string): string[] {
   return [...new Set(raw.flatMap(word => aliases[word] ? [word, aliases[word]] : [word]))];
 }
 
-export const isFixturePath = (file:string) => /(?:^|[\/\\])fixtures[\/\\]|\.fixture\.json\b|\.snap\b/i.test(file);
+export const isFixturePath = (file:string) => /(?:^|[\s\/\\])fixtures[\/\\]|\.fixture\.json\b|\.snap\b/i.test(file);
 
 function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
   const candidates: string[] = [];
@@ -83,7 +83,7 @@ export function recommendPath(
         .map((s) => `${s.name}: ${s.reuseTag}`);
 
       const boundaries = fileNode.symbols
-        .filter((s) => s.boundaryTag)
+        .filter((s) => s.boundaryTag && !isFixturePath(s.boundaryTag))
         .map((s) => `${s.name}: ${s.boundaryTag}`);
 
       if (reuseNotes.length > 0 && score > 0) score += 2;

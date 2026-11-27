@@ -1,6 +1,6 @@
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
-import { isTestFile } from "./languages/registry.ts";
+import { isTestFile,resolveImport } from "./languages/registry.ts";
 import { indexSpecificFiles,syncGraphIndex } from "./indexer.ts";
 import {bindingMatches,readBoundedSnippet,searchFrontier,runSync,type QuerySteps} from "./query-shared.ts";
 import type {CodeSymbol,InspectResult,SymbolRef} from "./types.ts";
@@ -22,6 +22,13 @@ export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string;
   if (scope.mode === "jit" && !getLookup(index).symbolByName.has(name)) {
     // Partial and case-insensitive matches may occur in the path alone.
     indexSpecificFiles(resolved, scope.knownFiles, { paths: scope.paths });
+  }
+  // A receiver may be a local instance of a directly imported class.
+  if(scope.mode==="jit"){
+    const roots=getLookup(index).symbolByName.get(name)??[];
+    for(const file of new Set(roots.map(s=>s.file))){
+      if(/\.[cm]?[jt]sx?$/.test(file))indexSpecificFiles(resolved,[file],{paths:scope.paths,followImports:1});
+    }
   }
   let frontierNames = new Set([name]);
   for (let hop = 0; scope.mode === "jit" && hop < maxDepth; hop++) {
@@ -74,8 +81,12 @@ export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string;
           const qualified = node.qualifiedCalls?.filter(ref => ref.endsWith("." + callName));
           const key = qualified === undefined ? callName : qualified.length === 1 ? qualified[0] : undefined;
           const candidates = key ? byName.get(key) : undefined;
+          const nearby = () => {
+            const imports=new Set(index.files[node.file].imports.map(spec=>resolveImport(node.file,spec,scope.paths)));
+            return candidates?.filter(c=>c.kind==="method" && (c.file===node.file || imports.has(c.file)));
+          };
           const possible = node.localCallees?.includes(callName) ? candidates?.filter(c=>c.file===node.file)
-            : node.importCallees && !node.importCallees.includes(callName) ? undefined : candidates;
+            : node.importCallees && !node.importCallees.includes(callName) ? nearby() : candidates;
           const resolvedTarget = possible?.length === 1 ? possible[0] : undefined;
           callees.push(
             resolvedTarget
