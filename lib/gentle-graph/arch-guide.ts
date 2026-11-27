@@ -24,6 +24,8 @@ export function tokenizeIntent(text: string): string[] {
   return [...new Set(raw.flatMap(word => aliases[word] ? [word, aliases[word]] : [word]))];
 }
 
+export const isFixturePath = (file:string) => /(?:^|[\/\\])fixtures[\/\\]|\.fixture\.json\b|\.snap\b/i.test(file);
+
 function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
   const candidates: string[] = [];
   for (const top of ["AGENTS.md", "README.md"]) {
@@ -46,12 +48,10 @@ function findRelevantDocs(projectRoot: string, tokens: string[]): string[] {
     }
   }
 
-  return candidates
-    .filter((rel) => {
-      const lower = rel.toLowerCase();
-      return lower === "agents.md" || tokens.some((t) => lower.includes(t));
-    })
-    .slice(0, 6);
+  return candidates.filter(doc => !isFixturePath(doc)).map(doc=>{
+    const words = tokenizeIntent(path.posix.basename(doc, ".md"));
+    return { doc, matches:words.filter(w=>tokens.includes(w)).length };
+  }).filter(row=>row.matches>0).sort((a,b)=>b.matches-a.matches || a.doc.localeCompare(b.doc)).slice(0,2).map(row=>row.doc);
 }
 
 export function recommendPath(

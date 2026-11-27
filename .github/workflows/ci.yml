@@ -25,3 +25,9 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: node scripts/bench-jit.mjs 30000 --check
+      - uses: actions/checkout@v4
+        with:
+          repository: Gentleman-Programming/gentle-shell
+          ref: c9b59eab57a56224c76b99e1caa9bb94cb113dc8
+          path: benchmark-host
+      - run: node scripts/bench-queries.mjs benchmark-host

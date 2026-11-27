@@ -1,5 +1,5 @@
 import { isManifest } from "./arch-detector.ts";
-import { gitDirtyFiles, gitInventory } from "./git-scope.ts";
+import { gitDirtyFilesSync, gitInventory } from "./git-scope.ts";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -104,8 +104,7 @@ function eligible(file: string): boolean {
 
 const isContract = (file: string) => /(?:^|\/)contracts\/.*\.(?:md|txt|ya?ml|json)$/i.test(file);
 
-export function listWorkspaceFiles(root: string) {
-  const tracked = gitInventory(root);
+export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
   const knownFiles = tracked?.files ?? [];
   if (!tracked) walkSourceFiles(root, root, knownFiles);
   const files: string[] = [], manifests: string[] = [], contracts: string[] = [];
@@ -130,7 +129,7 @@ export function listWorkspaceFiles(root: string) {
 type Scope = { manifests: string[]; contracts: string[]; knownFiles: string[]; paths: Set<string>; mode: "full" | "jit"; dirty: string[] };
 const scopes = new WeakMap<GraphIndex, { scope: Scope; time: number; stalePatterns: number }>();
 
-export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean } = {}) {
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean; deadline?:number } = {}) {
   const root = path.resolve(projectRoot);
   const index = loadGraphIndex(root);
   const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
@@ -164,6 +163,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
   for (let depth = 0; frontier.size; depth++) {
     const next = new Set<string>();
     for (const file of frontier) {
+      if(options.deadline!==undefined && performance.now()>=options.deadline) break;
       if (visited.has(file)) continue;
       visited.add(file);
       stats.scanned++;
@@ -191,16 +191,16 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
   return { index, stats };
 }
 
-export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean } = {}) {
+export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean; inventory?: ReturnType<typeof gitInventory>; dirty?: string[]; refresh?: boolean } = {}) {
   const root = path.resolve(projectRoot);
   const index = loadGraphIndex(root);
   const previous = scopes.get(index);
   const force = options === true || (typeof options === "object" && options.fullSync);
-  if (!force && previous?.scope.mode === "full" && previous.scope.knownFiles.length <= 500 && performance.now() - previous.time < SYNC_TTL_MS) {
+  if (!(typeof options==="object" && options.refresh) && !force && previous?.scope.mode === "full" && previous.scope.knownFiles.length <= 500 && performance.now() - previous.time < SYNC_TTL_MS) {
     return { index, ...previous.scope, stats: { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: previous.stalePatterns } };
   }
-  const { knownFiles, git, contracts, manifests, untracked } = listWorkspaceFiles(root);
-  const dirty = git && !force && knownFiles.length > 500 ? gitDirtyFiles(root, untracked) : null;
+  const { knownFiles, git, contracts, manifests, untracked } = listWorkspaceFiles(root,typeof options==="object" ? options.inventory : undefined);
+  const dirty = git && !force && knownFiles.length > 500 ? ((typeof options==="object" ? options.dirty : undefined) ?? gitDirtyFilesSync(root, untracked)) : null;
   const scope: Scope = { knownFiles, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
   const patterns = loadArchGuide(root).patterns.map(p => p.entry.split("#")[0]);
   const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];

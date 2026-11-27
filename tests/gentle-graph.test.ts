@@ -169,7 +169,7 @@ it("finds re-export dependents and bounds all compact read-tool responses", () =
     inspect[0].snippet = long;
     impact.affectedFiles.push(long);
     guide.recommendedModules[0].reuseNotes.push(long);
-    assert.equal(formatGuide(guide).length, 2400);
+    assert.equal(formatGuide(guide).length, 1199);
     assert.equal(formatInspect(inspect).length, 3000);
     assert.equal(formatImpact(impact).length, 2000);
   } finally {
@@ -329,7 +329,7 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     fs.writeFileSync(path.join(dir,"client.py"),"query = 'alpha'");
     fs.writeFileSync(path.join(dir,"note.md"),"alpha");
     fs.writeFileSync(path.join(dir,".gentle-graph","generated.ts"),"alpha");
-    assert.deepEqual(gitGrepFiles(dir,["alpha","-port[5]"],Infinity)?.sort(),["client.py","src/query.TS"]);
+    assert.deepEqual((await gitGrepFiles(dir,["alpha","-port[5]"],Infinity))?.sort(),["client.py","src/query.TS"]);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -350,4 +350,48 @@ it("ranks a relevant imported implementation used by the entry among the first t
     assert(!modules(3).includes("unused.ts"));
     assert.equal(new Set(modules(5)).size,5);
   } finally { clearMemoryCache(root); fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+it("reuses Git searches and invalidates them on repeated edits of a dirty file", async t => {
+  const {gitSnapshot, gitGrepFiles, clearGitSession} = await import("../lib/gentle-graph/git-scope.ts");
+  const root = largeRepo(t, 1);
+  t.after(clearGitSession);
+  const file = path.join(root,"caller.ts");
+  fs.appendFileSync(file,"\n// firstNeedle");
+  const state = await gitSnapshot(root);
+  assert.deepEqual(await gitGrepFiles(root,"firstNeedle",80,state),["caller.ts"]);
+  assert.strictEqual(await gitSnapshot(root),state);
+  assert.deepEqual(await gitGrepFiles(root,["firstNeedle","firstNeedle"],1,state),["caller.ts"]);
+  assert.equal(state.greps.size,1);
+  fs.writeFileSync(file,"// replacementNeedle");
+  assert.notStrictEqual(await gitSnapshot(root),state);
+  assert.deepEqual(await gitGrepFiles(root,"firstNeedle"),[]);
+});
+
+it("marks exhausted impact searches as partial", t => {
+  const root=makeTempProject();
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  assert.equal(graphImpact("verifyToken",{projectRoot:root,budgetMs:0}).partial,true);
+});
+
+it("omits fixture paths and caps intent-related guide documents", t => {
+  const root=makeTempProject();
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,"contracts","fixtures"));
+  for(const name of ["auth.fixture.json","fixtures/auth.md","auth.snap","auth-service.md","auth-policy.md","calendar.md"])
+    fs.writeFileSync(path.join(root,"contracts",name),"auth");
+  const result=graphGuide("auth",{projectRoot:root});
+  assert.equal(result.relevantDocs.length,2);
+  assert.ok(result.relevantDocs.every(f=>f.includes("auth")));
+  assert.doesNotMatch(JSON.stringify([result.boundaries,result.relevantDocs]),/fixture|\.snap|calendar/);
+});
+
+it("coalesces concurrent host queries and releases workers on shutdown", async t=>{
+  const {sessionQuery,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
+  const root=makeTempProject();
+  t.after(async()=>{await closeQuerySessions();fs.rmSync(root,{recursive:true,force:true});});
+  const q={kind:"inspect" as const,root,term:"verifyToken"};
+  const first=sessionQuery(q);
+  assert.equal(first,sessionQuery(q));
+  assert.match(await first,/src\/auth.ts/);
 });

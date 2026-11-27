@@ -81,21 +81,39 @@ export const typescript: LanguageAdapter = {
     if (!ts) return lexicalTS(file, content);
     const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
     const { result, add } = sourceFile(file, content, language(file));
-    function calls(node: any, name: string) {
-      const found = new Set<string>();
-      function walk(n: any) {
-        if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
-          const target = n.expression.name?.text ?? n.expression.text;
-          if (target && target !== name) found.add(target);
-        }
-        ts.forEachChild(n, walk);
+    const locals=new Set<string>(), imports=new Set<string>();
+    for(const declaration of sf.statements){
+      if(declaration.name?.text) locals.add(declaration.name.text);
+      if(ts.isVariableStatement(declaration))
+        for(const binding of declaration.declarationList.declarations) if(binding.name?.text) locals.add(binding.name.text);
+      if(ts.isImportDeclaration(declaration) && declaration.moduleSpecifier.text.startsWith(".")){
+        const clause=declaration.importClause;
+        if(clause?.name)imports.add(clause.name.text);
+        for(const binding of clause?.namedBindings?.elements??[])imports.add(binding.name.text);
       }
-      walk(node);
-      return [...found];
     }
-    function record(n: any, name: string, kind: SymbolKind, exported: boolean, collect = true) {
-      const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
-      return add(name, kind, line, sf.getLineAndCharacterOfPosition(n.end).line, exported, collect ? calls(n, name.split(".").at(-1)!) : []);
+    function record(n:any,name:string,kind:SymbolKind,exported:boolean,collect=true){
+      const found=new Set<string>(), local=new Set<string>(), imported=new Set<string>();
+      const short=name.split(".").at(-1);
+      function walk(node:any){
+        if(ts.isCallExpression(node)||ts.isNewExpression(node)){
+          const expr=node.expression, target=expr.name?.text??expr.text;
+          if(target && target!==short){
+            found.add(target);
+            if(ts.isIdentifier(expr)){
+              if(locals.has(target))local.add(target);
+              else if(imports.has(target))imported.add(target);
+            } else if(expr.name && (expr.expression.kind===ts.SyntaxKind.ThisKeyword || ts.isIdentifier(expr.expression) && imports.has(expr.expression.text))) imported.add(target);
+          }
+        }
+        ts.forEachChild(node,walk);
+      }
+      if(collect)walk(n);
+      const line=sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
+      const sym=add(name,kind,line,sf.getLineAndCharacterOfPosition(n.end).line,exported,[...found]);
+      sym.localCallees=[...local];
+      sym.importCallees=[...imported];
+      return sym;
     }
     for (const n of sf.statements) {
       const exp = !!n.modifiers?.some((m: any) => m.kind === ts.SyntaxKind.ExportKeyword);
