@@ -110,7 +110,7 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       // Run the first Git commands while Node loads the language adapters in the worker.
       const prepared = cold ? await prepareColdScope(query.root, query.kind !== "guide" ? query.term : undefined, query.kind === "impact") : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
-      if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
+      if (lane.worker === worker) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
     }
     send().catch(err => {
       // Git preparation may fail while the new worker is still booting. Keep
@@ -148,9 +148,20 @@ export async function closeQuerySessions() {
   clearGitSession();
   await Promise.all(active.map(async lane => {
     lane.closed = true;
-    await Promise.all([lane.worker?.terminate(),lane.compiler?.terminate()]);
-    await lane.stopping;
     await lane.tail.catch(() => {});
+    await lane.stopping;
+    const worker=lane.worker;
+    if(worker && worker.threadId!==-1){
+      worker.ref();
+      await new Promise<void>(resolve=>{
+        const done=()=>{worker.off("message",message);worker.off("exit",done);resolve();};
+        const message=(reply:{drained?:boolean})=>{if(reply.drained)done();};
+        worker.on("message",message);
+        worker.once("exit",done);
+        worker.postMessage({close:true});
+      });
+    }
+    await Promise.all([worker?.terminate(),lane.compiler?.terminate()]);
   }));
 }
 

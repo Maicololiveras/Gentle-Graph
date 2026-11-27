@@ -46,6 +46,7 @@ if(initial.kind==="guide" && process.platform==="win32"){
   if(tracked)previews=previewTrackedGuide(initial.root,initial.term,tracked);
 }
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
+let publishing:Promise<void>|undefined;
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
   let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root,JSON.stringify([q.kind,q.term])).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
@@ -54,7 +55,13 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const cacheKey=key+indexStamp(q.root);
   const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
+  if(publishing){
+    await publishing;
+    const committed=state?.results.get(key+indexStamp(q.root));
+    if(committed!==undefined)return committed;
+  }
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
+  let publication:ReturnType<typeof flushGraphWrites>;
   let text:string,partial=false,mode:string,indexed:number;
   const timings=prepared && initial.profileStart!==undefined ? {scope:0,query:0,flush:0} : undefined;
   const started=performance.now();
@@ -78,7 +85,9 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   indexed=Object.keys(scope.index.files).length;
   } finally {
     if(timings)timings.query=performance.now()-started-timings.scope;
-    try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+    try{publication=flushGraphWrites(q.root,!!prepared && !!state && mode==="jit",stamp=>{
+      if(state && !partial && !degraded)state.results.set(key+stamp,{text,partial,mode,indexed});
+    });}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
   }
   if(timings){
     timings.flush=performance.now()-started-timings.scope-timings.query;
@@ -89,9 +98,16 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
     state.results.set(key+indexStamp(q.root),reply);
   }
+  if(publication){
+    publishing=publication.catch(error=>{
+      // An unavailable disk cache does not invalidate the computed answer.
+      if(initial.profileStart!==undefined)console.error("Graph cache publication failed",error.code);
+    }).finally(()=>{publishing=undefined;});
+  }
   return reply;
 }
-parentPort.on("message",async({query,prepared,inventoryReady,degraded}:{query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
+parentPort.on("message",async({query,prepared,inventoryReady,degraded,close}:{close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
+  if(close){await publishing;parentPort.postMessage({drained:true});return;}
   try {
     const received = profile ? performance.now() : 0;
     let result:Awaited<ReturnType<typeof handle>>;

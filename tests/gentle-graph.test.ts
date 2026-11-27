@@ -579,6 +579,9 @@ it("reports cold query telemetry and finds an untracked consumer in a fresh work
     assert.match(first.text,/extra\.test\.ts/);
     assert.deepEqual(await sessionQueryDetails(query),first);
   }finally{await closeQuerySessions();}
+  const persisted=JSON.parse(fs.readFileSync(path.join(root,".gentle-graph/index.json"),"utf8"));
+  assert.ok(persisted.files["extra.test.ts"]);
+  assert.ok(!fs.readdirSync(path.join(root,".gentle-graph")).some(file=>file.endsWith(".tmp")));
 });
 
 it("rechecks preview contents before publishing the selected guide files", async t => {

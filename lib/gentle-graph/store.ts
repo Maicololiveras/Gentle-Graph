@@ -210,10 +210,40 @@ function withFileLock<T>(file:string,work:()=>T):T{
 // into a single durable write before the host receives the result.
 const pendingWrites=new Map<string,{index?:GraphIndex;files:Set<string>}>();
 export function beginGraphWrites(root:string){pendingWrites.set(root,{files:new Set()});}
-export function flushGraphWrites(root:string){
+// The first JSON snapshot is a disposable cache. Publish it atomically in
+// the background for Windows sessions; ordinary writes and migrations keep
+// their existing transaction semantics.
+export function flushGraphWrites(root:string,background=false,onPublished?:(stamp:string)=>void):Promise<void>|undefined{
   const batch=pendingWrites.get(root);
   pendingWrites.delete(root);
-  if(batch?.index && batch.files.size)persistIndex(root,batch.index,batch.files);
+  if(!batch?.index || !batch.files.size)return;
+  const index=batch.index;
+  if(background && process.platform==="win32" && !jsonOnly(root) && stamps.get(root)==="absent" &&
+      Object.keys(index.files).length<=SQL_FILE_THRESHOLD){
+    const dir=path.join(root,GRAPH_DIR),file=path.join(dir,INDEX_FILE);
+    const tmp=file+"."+randomUUID()+".tmp";
+    index.projectRoot=root;
+    index.updatedAt=new Date().toISOString();
+    const bytes=JSON.stringify(index);
+    return (async()=>{
+      try{
+        await fs.promises.mkdir(dir,{recursive:true});
+        await fs.promises.writeFile(tmp,bytes,{flag:"wx"});
+        const published=jsonStamp(tmp);
+        await fs.promises.link(tmp,file);
+        if(!hasSql(root) && !fs.existsSync(path.join(dir,"index.lock"))){
+          memoryIndexCache.set(root,index);
+          stamps.set(root,published);
+          onPublished?.(published);
+          return;
+        }
+      }catch(error){
+        if(!["EEXIST","EPERM","ENOTSUP","EOPNOTSUPP","EXDEV","EACCES","ENOSYS"].includes(error.code))throw error;
+      }finally{await fs.promises.unlink(tmp).catch(e=>{if(e.code!=="ENOENT")throw e;});}
+      persistIndex(root,index,batch.files);
+    })();
+  }
+  persistIndex(root,index,batch.files);
 }
 export function saveGraphIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   const batch=pendingWrites.get(projectRoot);
@@ -226,6 +256,28 @@ export function saveGraphIndex(projectRoot:string,index:GraphIndex,changed:Set<s
 function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   const root=path.resolve(projectRoot),dir=path.join(root,GRAPH_DIR),file=path.join(dir,INDEX_FILE);
   index.projectRoot=root;index.updatedAt=new Date().toISOString();
+  // On a new Windows checkout publish the directory with its completed
+  // index in one rename. Windows refuses to replace an existing directory;
+  // a concurrent publisher or guide writer takes the locked merge path.
+  if(process.platform==="win32" && !jsonOnly(root) && stamps.get(root)==="absent" &&
+      !fs.existsSync(dir) && Object.keys(index.files).length<=SQL_FILE_THRESHOLD){
+    const staging=fs.mkdtempSync(path.join(root,".gentle-graph-init-"));
+    let published=false;
+    try{
+      const snapshot=path.join(staging,INDEX_FILE);
+      fs.writeFileSync(snapshot,JSON.stringify(index));
+      const stamp=jsonStamp(snapshot);
+      fs.renameSync(staging,dir);
+      published=true;
+      memoryIndexCache.set(root,index);
+      stamps.set(root,stamp);
+      return;
+    }catch(error){
+      if(!fs.existsSync(dir))throw error;
+    }finally{
+      if(!published)fs.rmSync(staging,{recursive:true,force:true,maxRetries:5,retryDelay:20});
+    }
+  }
   ensureGraphDir(root);
   // Retain the version observed before our write. A concurrent commit is then
   // detected on the next read, even when it landed just before this transaction.
@@ -235,8 +287,9 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   // Publish the first JSON snapshot without allocating a second lock file.
   // A hard link installs complete bytes exclusively. Contending creators
   // merge their deltas under the regular lock when the destination exists.
-  // A hard link publishes complete bytes without renaming a directory on NTFS.
-  if(stamps.get(root)==="absent" && !jsonOnly(root) &&
+  // On NTFS publishing a second hard link and immediately removing the
+  // first can stall. Use the same locked rename as subsequent snapshots.
+  if(process.platform!=="win32" && stamps.get(root)==="absent" && !jsonOnly(root) &&
       Object.keys(index.files).length<=SQL_FILE_THRESHOLD && !fs.existsSync(file)){
     const tmp=file+"."+randomUUID()+".tmp";
     try{
@@ -248,14 +301,7 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
       }
     }catch(error){
       if(!["EEXIST","EPERM","ENOTSUP","EOPNOTSUPP","EXDEV","EACCES","ENOSYS"].includes(error.code))throw error;
-    }finally{
-      if(process.platform==="win32"){
-        // The destination is already durable. File removal can wait on NTFS
-        // sharing handles independently of the caller's response.
-        void fs.promises.rm(tmp,{force:true,maxRetries:5,retryDelay:20,recursive:true})
-          .catch(()=>{try{fs.unlinkSync(tmp);}catch{/* The temporary file may already be gone. */}});
-      }else fs.rmSync(tmp,{force:true});
-    }
+    }finally{fs.rmSync(tmp,{force:true});}
   }
   withFileLock(path.join(dir,"index.lock"),()=>{
     if(hasSql(root)){
