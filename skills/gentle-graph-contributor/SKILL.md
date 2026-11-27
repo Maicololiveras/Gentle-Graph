@@ -1,10 +1,12 @@
 ---
 name: gentle-graph-contributor
-description: Preparar cambios de Gentle Graph para revisión, incluidos adaptadores, consultas, contratos de herramientas y rendimiento.
+description: Prepare Gentle Graph changes for review, including adapters, queries, tool contracts and performance evidence.
 ---
 
-Lee CONTRIBUTING.md. Mantén la fachada pública en index.ts y la lógica de cada consulta en query-guide, query-inspect y query-impact. Sitúa los adaptadores en languages/. Conserva cero dependencias npm y evita añadir binarios externos.
+# Gentle Graph contributor
 
-Respeta los presupuestos de salida de 2400 caracteres para guía ordinaria como máximo, 3000 para inspección o guía con snippets y 2000 para impacto. Aplica los límites más estrictos de cada modalidad. Mantén GRAPH_PROMPT_HINT estático dentro del presupuesto aproximado de 24 tokens.
+Read [CONTRIBUTING.md](../../CONTRIBUTING.md). Keep the public API in `index.ts`, query logic in `query-guide.ts`, `query-inspect.ts` and `query-impact.ts`, and language adapters in `languages/`. Keep zero declared npm dependencies and avoid new external binaries.
 
-Incluye en el resumen de la PR la salida de pnpm typecheck, el conteo de pnpm test, el p95 del benchmark de 30.000 archivos y el estado de Linux y Windows. Identifica qué plataforma verificaste localmente. Para cambios en motor, herramientas o prompt incluye también el resultado A/B de tokens y tiempo con calidad equivalente.
+Respect the output limits. The general guide ceiling is 2,400 characters and the compact guide uses the stricter 1,199-character cap. Inspection and guides with snippets allow 3,000 characters. Impact allows 2,000. Keep `GRAPH_PROMPT_HINT` static and within its approximate 24-token budget.
+
+Report the typecheck result, passing test count, 30,000-file benchmark p95 and Linux/Windows CI status in the PR summary. Identify the OS tested locally. For engine, tool or prompt changes, include A/B token and timing results with equivalent verified quality.
