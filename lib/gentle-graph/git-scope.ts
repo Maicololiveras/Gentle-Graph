@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {rootLayout,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
+import {projectionArgs,projectionPattern} from "./git-projection.ts";
 import { promisify } from "node:util";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
 import { isIndexableFile, sourceExtensions } from "./languages/registry.ts";
@@ -143,6 +144,7 @@ export interface GitSnapshot {
   dirty:string[];
   untracked?:string[];
   inventory?: Inventory;
+  projection?: string[];
   greps:Map<string,string[]>;
   results:Map<string,string>;
   checkedAt:number;
@@ -181,7 +183,7 @@ async function metadata(files:string[]):Promise<string>{
   return hash.digest("hex");
 }
 
-export async function prepareColdScope(root:string, inspectTerm?:string):Promise<[GitSnapshot|null,Inventory|null]>{
+export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
   // Git for Windows scans tracked and untracked entries in one status pass.
@@ -193,10 +195,12 @@ export async function prepareColdScope(root:string, inspectTerm?:string):Promise
       // inspect. Overlap its read-only search with status on large worktrees.
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
-      const [state, hits] = await Promise.all([
+      const [state, hits, projection] = await Promise.all([
         gitSnapshot(root),
-        simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null
+        simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
+        impact && fs.existsSync(path.join(root,"tsconfig.json")) ? gitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
+      if (state && !state.dirty.length && projection) state.projection = projection;
       if (simple && state && !state.dirty.length && hits) {
         state.greps.set(JSON.stringify([inspectTerm]), hits);
       }

@@ -1,5 +1,6 @@
 import { isManifest } from "./arch-detector.ts";
 import { gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
+import {workerData} from "node:worker_threads";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -8,7 +9,7 @@ import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveG
 import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
-const profileIndex = process.env.GENTLE_GRAPH_PROFILE === "1";
+const profileIndex = process.env.GENTLE_GRAPH_PROFILE === "1" && workerData?.kind === "inspect";
 const MAX_SOURCE_BYTES = 256 * 1024;
 
 const IGNORED_DIRS = new Set([

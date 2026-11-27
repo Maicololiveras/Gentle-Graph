@@ -1,4 +1,5 @@
-import {moduleProjection,projectionArgs,projectionPattern,ModuleReadBatch,readModuleBatch,readModuleBatchSync} from "./impact-modules.ts";
+import {moduleProjection,ModuleReadBatch,readModuleBatch,readModuleBatchSync} from "./impact-modules.ts";
+import {projectionArgs,projectionPattern} from "./git-projection.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type { GraphIndex, CodeSymbol } from "./types.ts";
@@ -79,7 +80,7 @@ export async function runAsync<T>(
   deadline = Infinity, prefetchModuleImports = false
 ): Promise<T> {
   async function readProjection() {
-    const cached = state && projections.get(state);
+    const cached = state && (state.projection ?? projections.get(state));
     if (cached) return cached;
     const remaining = Math.max(1, Math.min(4000, Math.ceil(deadline - performance.now())));
     const rows = await gitPaths(root, projectionArgs, projectionPattern, remaining);

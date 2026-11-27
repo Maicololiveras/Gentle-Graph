@@ -15,6 +15,7 @@ export interface Query {
 
 interface Lane {
   worker?: Worker;
+  compiler?: Worker;
   tail: Promise<unknown>;
   stopping?: Promise<number>;
   closed?: boolean;
@@ -44,6 +45,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
       Atomics.add(signal,0,1);
       Atomics.notify(signal,0);
     };
+    lane.compiler=compiler;
     compiler.on("error",unavailable);
     compiler.once("exit",unavailable);
     compiler.unref();
@@ -99,7 +101,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     worker.once("error", error);
     async function send() {
       // Run the first Git commands while Node loads the language adapters in the worker.
-      const prepared = cold ? await prepareColdScope(query.root, query.kind === "inspect" ? query.term : undefined) : undefined;
+      const prepared = cold ? await prepareColdScope(query.root, query.kind === "inspect" ? query.term : undefined, query.kind === "impact") : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
     }
@@ -138,7 +140,7 @@ export async function closeQuerySessions() {
   clearGitSession();
   await Promise.all(active.map(async lane => {
     lane.closed = true;
-    await lane.worker?.terminate();
+    await Promise.all([lane.worker?.terminate(),lane.compiler?.terminate()]);
     await lane.stopping;
     await lane.tail.catch(() => {});
   }));

@@ -9,10 +9,6 @@ import {symbolNames,saveGraphIndex} from "./store.ts";
 import type {CodeSymbol,SymbolRef} from "./types.ts";
 
 export const moduleProjection = Symbol("relative module specifiers");
-export const projectionArgs = ["grep","--untracked","-I","-z","-o","-E","-f","-","--",
-  ...["ts","tsx","js","jsx","mts","cts","mjs","cjs","svelte"].map(ext=>"*."+ext)];
-export const projectionPattern = `["']([.]{1,2}(/[^"']*)?|[$]lib/[^"']*)["']\n`;
-
 export const jsModule=(file:string)=>/\.[cm]?[jt]sx?$/.test(file);
 
 interface Edge {
