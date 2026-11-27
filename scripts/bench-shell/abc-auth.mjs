@@ -1,12 +1,23 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
+import { findPackageJSON } from "node:module";
+import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+export async function loadCodexOAuth(cli) {
+  const manifest = findPackageJSON("@earendil-works/pi-ai", pathToFileURL(cli));
+  if (!manifest) throw Error("Pi runtime is missing @earendil-works/pi-ai.");
+  const pkg = JSON.parse(fs.readFileSync(manifest, "utf8"));
+  const entry = pkg.exports?.["./providers/*"]?.import;
+  if (pkg.version !== "1.6.0" || typeof entry !== "string")
+    throw Error("Expected the Pi 1.6.0 ESM provider export in " + manifest);
+  const file = path.resolve(path.dirname(manifest), entry.replace("*", "openai-codex"));
+  const { openaiCodexProvider } = await import(pathToFileURL(file));
+  return openaiCodexProvider().auth.oauth;
+}
+
 export async function deviceSession(cli) {
-  const resolve = createRequire(cli).resolve;
-  const { openaiCodexProvider } = await import(pathToFileURL(resolve("@earendil-works/pi-ai/providers/openai-codex")));
-  const oauth = openaiCodexProvider().auth.oauth;
+  const oauth = await loadCodexOAuth(cli);
   let grant = await oauth.login({
     signal: AbortSignal.timeout(15 * 60_000),
     prompt: async prompt => {

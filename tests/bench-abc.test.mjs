@@ -41,3 +41,17 @@ test("ABC resolves the bundled executable and unbundled runtime from one pinned 
   fs.writeFileSync(manifest,JSON.stringify({...metadata,version:"0.85.1"}));
   assert.throws(()=>resolvePiRuntime(root),/1\.6\.0/);
 });
+
+test("ABC loads the Codex import-only provider from the selected Pi installation",async t=>{
+  const {loadCodexOAuth}=await import("../scripts/bench-shell/abc-auth.mjs");
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"gg-abc-oauth-"));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const pkg=path.join(root,"node_modules","@earendil-works","pi-ai");
+  fs.mkdirSync(pkg,{recursive:true});
+  fs.writeFileSync(path.join(pkg,"package.json"),JSON.stringify({
+    name:"@earendil-works/pi-ai",version:"1.6.0",type:"module",
+    exports:{"./providers/*":{import:"./*.js"}},
+  }));
+  fs.writeFileSync(path.join(pkg,"openai-codex.js"),'export const openaiCodexProvider=()=>({auth:{oauth:{name:"fixture"}}})');
+  assert.equal((await loadCodexOAuth(path.join(root,"cli.js"))).name,"fixture");
+});
