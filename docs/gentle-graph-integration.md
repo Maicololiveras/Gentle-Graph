@@ -53,3 +53,21 @@ Con más de 2000 archivos efectivamente indexados se activa SQLite WAL de Node. 
 ## Tercera variante con CodeGraph
 
 Define `CODEGRAPH_PI_EXTENSION` con la ruta absoluta a la extensión Pi de CodeGraph instalada y ejecuta el mismo comparador. En PowerShell usa `$env:CODEGRAPH_PI_EXTENSION = 'C:\ruta\codegraph-extension.ts'`. Si requiere preparar su índice, define `CODEGRAPH_PREPARE_ARGV` como un array JSON con el ejecutable y sus argumentos, según tu instalación. Se ejecuta en el worktree de CodeGraph y su tiempo se registra por separado. El comparador aleatoriza las tres variantes, registra las herramientas activas antes del turno y devuelve error si CodeGraph no añadió herramientas frente al control. Configura el backend para que lea el worktree actual. Archiva la versión de la extensión, CLI y modelo junto al informe. El benchmark requiere una instalación operativa de CodeGraph para producir resultados de esa variante.
+
+### Benchmark A/B/C en Windows
+
+Desde el checkout de Gentle Graph que contiene el lanzador, usa PowerShell:
+
+```powershell
+node scripts/bench-gentle-shell.mjs --abc "D:\Dev\Gentleman\gentle-shell"
+```
+
+El lanzador usa la copia instalada de Pi y TypeScript 5.9.3 en el `node_modules` de Gentle Shell. Necesita Node 24, Git, el login de Pi para `openai-codex/gpt-6.2-sol` y un `codegraph --version` operativo. Los dos clones deben contener los commits `efeed94` (motor) y `c9b59ea` (host). El checkout que contiene el lanzador puede estar en una revisión posterior.
+
+Para B se utiliza únicamente la entrada de servidor stdio `mcpServers.codegraph` del `mcp.json` de Pi. Si tu configuración funcional está en otro archivo, define `$env:GENTLE_ABC_MCP_CONFIG` con su ruta. El lanzador fija `exposure: "direct"` y el directorio de trabajo del servidor al worktree de B. Usa `{worktree}` en argumentos que requieran una ruta de repositorio explícita. Para indexar antes de la sesión, se admite `CODEGRAPH_PREPARE_ARGV` con un array JSON de ejecutable y argumentos. Usa el ejecutable nativo o Node con la ruta del script para preparar en Windows.
+
+Se crean nueve worktrees y nueve hogares de Pi. Todos cargan el paquete Gentle Shell fijado; B añade el servidor MCP y C la extensión del motor fijado. Antes del primer prompt se comprueban tipos, modelo y herramientas en los nueve entornos mediante RPC. Para ejecutar únicamente estas comprobaciones, añade `--preflight-only`. Cada invocación genera una carpeta distinta dentro de `Documentos\Gentle-Graph\benchmarks\abc-efeed94-c9b59ea`.
+
+Se ejecuta la tarea original con razonamiento `high` en orden ABC, BCA y CAB. Las verificaciones del parche ejecutan el `verify.mjs` fijado y el compilador por separado. Los fallos de un brazo se registran y la ronda siguiente continúa. El proceso sale con código 1 si alguna corrida es inválida. El consolidado incluye solo rondas con tres brazos válidos. El primer edit se mide desde el inicio del proceso del agente hasta el evento real de ejecución. Las llamadas anidadas se cuentan a partir de eventos de Pi con ID de padre. Una edición ausente conserva el valor N/D.
+
+`summary.json` e `informe-abc.md` se escriben junto a los directorios por brazo con verificaciones, transcripciones, eventos y parches. La preparación de CodeGraph queda fuera del tiempo del agente y se registra por separado.
