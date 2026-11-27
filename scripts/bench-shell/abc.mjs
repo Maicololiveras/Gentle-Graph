@@ -35,9 +35,26 @@ function verify(cwd,env,args,file){
   return p.status;
 }
 
+export function resolvePiRuntime(packagePath){
+  const pkg=fs.realpathSync(packagePath);
+  const metadata=read(path.join(pkg,"package.json"));
+  if(metadata.name!=="@earendil-works/pi-coding-agent" || metadata.version!=="1.6.0")
+    throw Error("Set GENTLE_ABC_PI_PACKAGE to the isolated @earendil-works/pi-coding-agent 1.6.0 package directory.");
+  const bin=path.resolve(pkg,metadata.bin.pi);
+  // The published CLI lives in dist/bundle. The OAuth wrapper needs the
+  // unbundled modules alongside the SDK entry, independent of the bin layout.
+  const dist=path.dirname(path.resolve(pkg,metadata.main));
+  const cli=path.join(dist,"cli.js");
+  for(const name of ["cli.js","cli/setup.js","main.js","core/auth-storage.js","core/model-runtime.js"])
+    fs.accessSync(path.join(dist,name),fs.constants.R_OK);
+  const pi=run(process.execPath,[bin,"--version"]);
+  if(pi!=="1.6.0")throw Error("Unexpected Pi CLI version: "+pi);
+  return {pkg,bin,cli,pi};
+}
+
 export async function runABC(argv){
   if(argv.includes("--help")){
-    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only]\nRequires Windows, Node 24, installed Shell node_modules, interactive Codex device authorization and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
+    console.log("node scripts/bench-gentle-shell.mjs --abc SHELL_REPO [--preflight-only]\nRequires Windows, Node 24, installed Shell node_modules, Pi 1.6.0 (set GENTLE_ABC_PI_PACKAGE to an isolated pi-coding-agent package directory if needed), interactive Codex device authorization and a CodeGraph stdio entry in PI_CODING_AGENT_DIR/mcp.json or GENTLE_ABC_MCP_CONFIG.");
     return;
   }
   const only=argv.includes("--preflight-only");
@@ -46,13 +63,10 @@ export async function runABC(argv){
     throw Error("ABC requires Windows, Node 24 and the path to the Gentle Shell checkout; use --abc --help.");
   const repo=fs.realpathSync(positional[0]);
   for(const [root,sha] of [[repo,shellSHA],[graphRepo,graphSHA]]) git(root,"cat-file","-e",sha+"^{commit}");
-  const modules=fs.realpathSync(path.join(repo,"node_modules"));
+  const modules=fs.realpathSync(process.env.GENTLE_ABC_MODULES || path.join(repo,"node_modules"));
   const ts=read(path.join(modules,"typescript/package.json")).version;
   if(ts!=="5.9.3")throw Error("Expected TypeScript 5.9.3 in "+modules);
-  const pkg=path.join(modules,"@earendil-works/pi-coding-agent");
-  const cli=path.resolve(pkg,read(path.join(pkg,"package.json")).bin.pi);
-  const pi=run(process.execPath,[cli,"--version"]);
-  if(read(path.join(pkg,"package.json")).version!=="1.6.0")throw Error("ABC authentication requires pinned Pi 1.6.0.");
+  const {pkg,bin,cli,pi}=resolvePiRuntime(process.env.GENTLE_ABC_PI_PACKAGE || path.join(modules,"@earendil-works/pi-coding-agent"));
   const originalHome=process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(),".pi","agent");
   const configFile=process.env.GENTLE_ABC_MCP_CONFIG || path.join(originalHome,"mcp.json");
   if(!fs.existsSync(configFile))throw Error("Missing CodeGraph MCP configuration: "+configFile+
@@ -86,7 +100,7 @@ export async function runABC(argv){
     fs.symlinkSync(modules,path.join(dest,"node_modules"),"junction");
   }
   const manifest={out,graphSHA,shellSHA,harnessSHA:git(graphRepo,"rev-parse","HEAD").trim(),model,thinking:"high",
-    os:os.version()+" "+os.release()+" "+os.arch(),node:process.version,pi,typescript:ts,codegraph:cgVersion,binary,orders,arms:names,rows:[]};
+    os:os.version()+" "+os.release()+" "+os.arch(),node:process.version,pi,piPackage:pkg,piBin:bin,piRuntime:cli,modules,typescript:ts,codegraph:cgVersion,binary,orders,arms:names,rows:[]};
   const environments=[];
   try{
     const engine=path.join(temp,"engine");

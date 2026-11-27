@@ -24,3 +24,20 @@ test("ABC compares only complete valid rounds and preserves missing edit timings
   assert.match(fs.readFileSync(path.join(out,"informe-abc.md"),"utf8"),/1 \(1 anidadas\)/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out,"summary.json"))).rows.length,9);
 });
+
+test("ABC resolves the bundled executable and unbundled runtime from one pinned package",async t=>{
+  const {resolvePiRuntime}=await import("../scripts/bench-shell/abc.mjs");
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),"gg-abc-pi-")));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const metadata={name:"@earendil-works/pi-coding-agent",version:"1.6.0",main:"./dist/index.js",bin:{pi:"dist/bundle/cli.js"}};
+  const manifest=path.join(root,"package.json");
+  fs.writeFileSync(manifest,JSON.stringify(metadata));
+  for(const name of [metadata.bin.pi,"dist/cli.js","dist/cli/setup.js","dist/main.js","dist/core/auth-storage.js","dist/core/model-runtime.js"]){
+    const file=path.join(root,name);
+    fs.mkdirSync(path.dirname(file),{recursive:true});
+    fs.writeFileSync(file,name===metadata.bin.pi?'console.log("1.6.0")':"");
+  }
+  assert.deepEqual(resolvePiRuntime(root),{pkg:root,bin:path.join(root,metadata.bin.pi),cli:path.join(root,"dist/cli.js"),pi:"1.6.0"});
+  fs.writeFileSync(manifest,JSON.stringify({...metadata,version:"0.85.1"}));
+  assert.throws(()=>resolvePiRuntime(root),/1\.6\.0/);
+});
