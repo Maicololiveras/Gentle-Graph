@@ -148,3 +148,25 @@ it("traces a WPF DataContext and both Prism callbacks despite unrelated MVC fold
   assert.ok(!graphImpact("CalculateKngSup",opts).relatedTests.includes("Tests/KnightSupportTests.cs"));
   assert.ok(graphImpact("CalculateItemKnightSupports",opts).relatedTests.includes("Tests/KnightSupportTests.cs"));
 });
+
+it("reports exact binding, callback roles and test call sites for the GIS command shape", t => {
+  const opts = project(t, {
+    "Diagram.xaml": ['<View x:Class="GIS.Diagram">','<!-- {Binding CalculateCommand} -->',
+      '<Button Command="{Binding CalculateCommand}"/>','</View>'].join("\n"),
+    "DiagramVM.cs": ["public class DiagramVM {","public ICommand CalculateCommand { get; }",
+      "public DiagramVM() {","CalculateCommand = new DelegateCommand(", "CalculateKngSup, CanCalculateKngSup);","}",
+      "public void CalculateKngSup() { CalculateItemKnightSupports(); }",
+      "public bool CanCalculateKngSup() { return true; }","public void CalculateItemKnightSupports() {}","}"].join("\n"),
+    "KnightSupportTests.cs": ["public class KnightSupportTests {","[Test] public void Check() {",
+      "// CalculateItemKnightSupports();","vm.CalculateItemKnightSupports();","vm.CalculateItemKnightSupports();","}","}"].join("\n")
+  });
+  const result = graphInspect("CalculateCommand", { ...opts, depth: 2 })[0];
+  const evidence = result.evidence!;
+  assert.deepEqual(evidence.filter(s => s.file === "Diagram.xaml").map(s => [s.line,s.text]), [[3,"{Binding CalculateCommand}"]]);
+  assert.deepEqual(evidence.filter(s => s.file === "DiagramVM.cs").map(s => [s.line,s.role,s.target]),
+    [[4,"Execute","DiagramVM.CalculateKngSup"],[4,"CanExecute","DiagramVM.CanCalculateKngSup"]]);
+  const tests = evidence.filter(s => s.role === "Test call");
+  assert.deepEqual(tests.map(s => [s.line,s.target]), [[4,"CalculateItemKnightSupports"],[5,"CalculateItemKnightSupports"]]);
+  assert.equal(result.callers.find(c => c.file === "Diagram.xaml")?.line, 3);
+  assert.deepEqual(graphInspect("CalculateItemKnightSupports", opts)[0].evidence?.filter(s=>s.role === "Test call"), tests);
+});

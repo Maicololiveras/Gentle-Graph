@@ -165,6 +165,19 @@ export function graphInspect(
       : symbols.filter((s) => s.name.toLowerCase().includes(qLower) || s.id.toLowerCase().includes(qLower));
 
   return partial.slice(0, maxMatches).map((rootSym) => {
+    const evidence: NonNullable<InspectResult["evidence"]> = (rootSym.sites ?? [])
+      .filter(s => s.role === "Execute" || s.role === "CanExecute")
+      .map(site => ({ ...site, file: rootSym.file }));
+    const collectSites = (target: CodeSymbol, roles: string[]) => {
+      const keys = new Set(symbolNames(target.name));
+      const candidates = new Set([...keys].flatMap(key => callersByName.get(key) ?? []));
+      for (const caller of candidates) {
+        for (const site of caller.sites ?? []) {
+          if (roles.includes(site.role) && keys.has(site.target)) evidence.push({ ...site, file: caller.file });
+        }
+      }
+    };
+    collectSites(rootSym, ["Binding", "Test call"]);
     const callees: SymbolRef[] = [];
     const seenCallees = new Set<string>([rootSym.name]);
     let frontier: CodeSymbol[] = [rootSym];
@@ -181,7 +194,10 @@ export function graphInspect(
               ? { name: callName, file: resolvedTarget.file, line: resolvedTarget.line, hop }
               : { name: callName, hop }
           );
-          if (resolvedTarget) nextFrontier.push(resolvedTarget);
+          if (resolvedTarget) {
+            nextFrontier.push(resolvedTarget);
+            if (rootSym.sites?.some(s => s.role === "Execute") && hop <= maxDepth) collectSites(resolvedTarget, ["Test call"]);
+          }
         }
       }
       frontier = nextFrontier;
@@ -197,7 +213,8 @@ export function graphInspect(
         if (seenCallers.has(candidate.id)) continue;
         if (candidate.calls.some((c) => callerTargets.has(c))) {
           seenCallers.add(candidate.id);
-          callers.push({ name: candidate.name, file: candidate.file, line: candidate.line, hop });
+          const site = candidate.sites?.find(s => callerTargets.has(s.target));
+          callers.push({ name: candidate.name, file: candidate.file, line: site?.line ?? candidate.line, hop });
           for (const key of symbolNames(candidate.name)) nextTargets.add(key);
         }
       }
@@ -206,6 +223,7 @@ export function graphInspect(
     }
 
     return {
+      evidence,
       symbol: rootSym,
       snippet: readBoundedSnippet(resolved, rootSym.file, rootSym.line, rootSym.endLine),
       callees,

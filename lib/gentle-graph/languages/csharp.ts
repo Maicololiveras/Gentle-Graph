@@ -1,3 +1,4 @@
+import type { SourceSite } from "../types.ts";
 import path from "node:path";
 import { findBraceBlockEnd, sourceFile } from "./lexer-core.ts";
 import type { LanguageAdapter } from "./types.ts";
@@ -6,6 +7,15 @@ export const generatedCSharp = /\.(?:g(?:\.i)?|designer|AssemblyInfo)\.cs$/i;
 const capital = (s: string) => s[0].toUpperCase() + s.slice(1);
 const clrType = /\b(?:class|interface|record(?:\s+(?:class|struct))?|struct|enum)\s+(\w+)(?:<[^>]*>)?/;
 const hasAccess = (line: string) => /\b(?:public|internal)\b/.test(line);
+
+// Both regex passes visit offsets in ascending order. Count newlines once.
+function lineLocator(text: string) {
+  let cursor = 0, line = 1;
+  return (offset: number) => {
+    while (cursor < offset) if (text.charCodeAt(cursor++) === 10) line++;
+    return line;
+  };
+}
 
 export const csharp: LanguageAdapter = {
   id: "csharp", extensions: [".cs"],
@@ -72,13 +82,27 @@ export const csharp: LanguageAdapter = {
     const properties = new Map(result.symbols.filter(s => s.kind === "property").map(s => [s.name, s]));
     // Method groups passed to Prism are references even without call parentheses.
     const assignment = /\b(\w+)\s*=\s*new\s+(?:[\w.]+\.)?DelegateCommand(?:\s*<[^>]+>)?\s*\(\s*(?:this\.)?(\w+)\s*(?:,\s*(?:this\.)?(\w+)\s*)?\)/g;
-    for (const [, property, execute, canExecute] of code.matchAll(assignment)) {
+    const registrationLine = lineLocator(code);
+    for (const match of code.matchAll(assignment)) {
+      const [, property, execute, canExecute] = match;
       const command = properties.get(property);
       if (!command) continue;
-      for (const name of [execute, canExecute].filter(Boolean)) {
+      for (const [role, name] of [["Execute", execute], ["CanExecute", canExecute]] as const) {
+        if (!name) continue;
         const candidates = result.symbols.filter(s => s.kind === "method" && s.name.endsWith("." + name));
         const ref = candidates.length === 1 ? candidates[0].name : name;
         if (!command.calls.includes(ref)) command.calls.push(ref);
+        (command.sites ??= []).push({ target: ref, role, line: registrationLine(match.index!) });
+      }
+    }
+    if (csharp.isTestFile(file)) {
+      for (const method of result.symbols.filter(s => s.kind === "method")) {
+        const names = new Set(method.calls);
+        for (let n = method.line - 1; n < method.endLine; n++) {
+          for (const match of clean[n].matchAll(/\b(\w+)\s*(?:<[^<>;]+>)?\s*\(/g)) {
+            if (names.has(match[1])) (method.sites ??= []).push({ role: "Test call", target: match[1], line: n + 1 });
+          }
+        }
       }
     }
     if (/\.xaml\.cs$/i.test(file)) {
@@ -107,6 +131,8 @@ export const xaml: LanguageAdapter = {
     const cls = xml.match(/\bx:Class\s*=\s*["']([\w.]+)["']/);
     const name = cls?.[1].split(".").at(-1) ?? path.posix.basename(file, ".xaml");
     const calls = new Set<string>();
+    const sites: SourceSite[] = [];
+    const bindingLine = lineLocator(xml);
     const prefixes = new Set<string>();
     for (const m of xml.matchAll(/\bxmlns:([\w-]+)\s*=\s*["']clr-namespace:([^;"']+)/g)) {
       prefixes.add(m[1]);
@@ -114,11 +140,17 @@ export const xaml: LanguageAdapter = {
     }
     for (const m of xml.matchAll(/\b([\w-]+):(\w+)/g)) if (prefixes.has(m[1])) calls.add(m[2]);
     for (const m of xml.matchAll(/\{\s*(?:Binding\s+(?:Path\s*=\s*)?|(?:StaticResource|DynamicResource)\s+)([\w.]+)(?=\s*[,}])/g)) {
-      for (const part of m[1].split(".")) calls.add(part);
+      const end = xml.indexOf("}", m.index! + m[0].length);
+      const text = xml.slice(m.index!, end < 0 ? m.index! + m[0].length : Math.min(end + 1, m.index! + 160)).replace(/\s+/g, " ");
+      for (const part of m[1].split(".")) {
+        calls.add(part);
+        if (/^\{\s*Binding\b/.test(m[0])) sites.push({ role: "Binding", target: part, line: bindingLine(m.index!), text });
+      }
     }
     result.imports.push("./" + path.posix.basename(file) + ".cs");
     const line = xml.slice(0, cls?.index ?? 0).split("\n").length - 1;
-    add(name, "class", line, xml.split("\n").length - 1, true, [...calls]);
+    const view = add(name, "class", line, xml.split("\n").length - 1, true, [...calls]);
+    if (sites.length) view.sites = sites;
     return result;
   }
 };
