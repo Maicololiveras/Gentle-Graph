@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
-import { invalidateLookup, loadArchGuide, loadGraphIndex, saveArchGuide, saveGraphIndex } from "./store.ts";
+import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
 import type { GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
@@ -56,7 +56,7 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
   const guide = loadArchGuide(projectRoot);
   if (guide.patterns.length === 0) return 0;
 
-  let changed = false;
+  const revisions = new Map<string, string>();
   let staleCount = 0;
 
   for (const pattern of guide.patterns) {
@@ -64,6 +64,7 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
     let stale = false;
     let reason: string | undefined;
 
+    if (entryFile && !index.files[entryFile] && fs.existsSync(path.join(projectRoot, entryFile))) continue;
     if (entryFile && !index.files[entryFile]) {
       stale = true;
       reason = `Archivo no encontrado en el índice: ${entryFile}`;
@@ -79,13 +80,19 @@ function reconcilePatternsWithIndex(projectRoot: string, index: GraphIndex): num
     if (pattern.stale !== stale || pattern.staleReason !== reason) {
       pattern.stale = stale;
       pattern.staleReason = reason;
-      changed = true;
+      revisions.set(pattern.id, pattern.updatedAt);
     }
     if (stale) staleCount++;
   }
 
-  if (changed) {
-    try { saveArchGuide(projectRoot, guide); } catch { /* A read-only guide can still be queried. */ }
+  if (revisions.size) {
+    try { updateArchGuide(projectRoot, current => {
+      for (const checked of guide.patterns) {
+        if (!revisions.has(checked.id)) continue;
+        const live = current.patterns.find(p => p.id === checked.id && p.updatedAt === checked.updatedAt);
+        if (live) { live.stale = checked.stale; live.staleReason = checked.staleReason; }
+      }
+    }); } catch { /* A read-only guide can still be queried. */ }
   }
   return staleCount;
 }
@@ -121,7 +128,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
   const stats: SyncStats = { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: 0 };
   const start = performance.now();
   const visited = new Set<string>();
-  let changed = false;
+  const changed = new Set<string>();
   function visit(file: string) {
     const cached = index.files[file];
     if (!paths.has(file)) return;
@@ -134,12 +141,13 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     const hash = sha256(content);
     if (reusable && cached.sha256 === hash) {
       cached.mtimeMs = stat.mtimeMs;
-      changed = true;
+      changed.add(file);
       return cached;
     }
     // Generated single-line JS occasionally ships without a .min.js suffix.
     if (/\.[cm]?jsx?$/i.test(file) && content.length >= 8192 && content.split(/\r?\n/).some(line => line.length >= 8192)) return;
     const parsed = parseSourceFile(root, file, content, options.preview);
+    changed.add(file);
     stats.updated++;
     return index.files[file] = { ...parsed, ...(options.preview ? { preview: true } : {}), path: file, sha256: hash, mtimeMs: stat.mtimeMs };
   }
@@ -154,6 +162,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
       try { node = visit(file); } catch { /* A file can disappear between list and read. */ }
       if (!node && Object.hasOwn(index.files, file)) {
         delete index.files[file];
+        changed.add(file);
         stats.removed++;
       }
       if (node && depth < (options.followImports ?? 0)) {
@@ -166,8 +175,8 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     frontier = next;
   }
   if (stats.updated || stats.removed) invalidateLookup(index);
-  if (changed || stats.updated || stats.removed) {
-    try { saveGraphIndex(root, index); } catch { /* Keep read-only worktrees usable. */ }
+  if (changed.size) {
+    try { saveGraphIndex(root, index, changed); } catch { /* Keep read-only worktrees usable. */ }
   }
   stats.durationMs = performance.now() - start;
   return { index, stats };

@@ -215,3 +215,19 @@ for (const jit of [false, true]) it("scopes BOM command evidence and removes abs
   fs.unlinkSync(path.join(opts.projectRoot,"BillOfMaterialVMTests.cs"));
   for(const query of [key,"BillOfMaterialVM.cs"]) assert.deepEqual(graphImpact(query,opts).relatedTests,[]);
 });
+
+it("resolves explicit C# and TypeScript implementations separately from consumers", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "graph-contract-"));
+  try {
+    for (const [file, source] of Object.entries({
+      "IPort.cs": "public interface IPort {}",
+      "Adapter.cs": "public class Adapter\n  : IPort\n{}",
+      "Consumer.cs": "public class Consumer {\n public Consumer(IPort port) {}\n}",
+      "port.ts": "export interface IPort {}",
+      "adapter.ts": "import {IPort} from './port';\nexport class TsAdapter implements IPort {}"
+    })) fs.writeFileSync(path.join(root,file),source);
+    const result = graphInspect("IPort", { projectRoot:root });
+    assert.deepEqual(result.find(m=>m.symbol.file==="IPort.cs")?.implementations.map(s=>s.name), ["Adapter"]);
+    assert.deepEqual(result.find(m=>m.symbol.file==="port.ts")?.implementations.map(s=>s.name), ["TsAdapter"]);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});

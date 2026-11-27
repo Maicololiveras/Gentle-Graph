@@ -39,7 +39,8 @@ export const csharp: LanguageAdapter = {
         endOwner = findBraceBlockEnd(clean, i, clean.length);
         endMember = -1;
         attributes = "";
-        const clause = line.slice(type.index! + type[0].length).split("{")[0];
+        const tail = line.slice(type.index! + type[0].length);
+        const clause = (tail.includes("{") ? tail : [tail, ...clean.slice(i + 1, Math.min(i + 24, endOwner + 1))].join(" ")).split(/[;{]/)[0].split(/\bwhere\b/)[0];
         const bases = clause.split(":")[1] ?? "";
         const contracts = [...bases.matchAll(/(?:^|,)\s*(?:[\w.]+\.)?(\w+)(?:<[^>]*>)?/g)].map(m => m[1]);
         const argumentsUsed = [...bases.matchAll(/<([^>]+)>/g)].flatMap(m => m[1].match(/\b[A-Z]\w*/g) ?? []);

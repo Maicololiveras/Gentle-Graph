@@ -36,8 +36,12 @@ export function lexicalTS(file: string, content: string) {
     if (decl) {
       const end = findBraceBlockEnd(clean, i, clean.length);
       const name = decl[3] || "default";
-      add(name, decl[2] as SymbolKind, i, end, !!decl[1], decl[2] === "class" ? [] : undefined);
-      if (decl[2] === "class") { owner = name; until = end; memberEnd = -1; }
+      const sym = add(name, decl[2] as SymbolKind, i, end, !!decl[1], decl[2] === "class" ? [] : undefined);
+      if (decl[2] === "class") {
+        owner = name; until = end; memberEnd = -1;
+        const clause = clean.slice(i, Math.min(end + 1, i + 24)).join(" ").split("{")[0].match(/\bimplements\s+(.+)$/);
+        if (clause) sym.contracts = clause[1].replace(/<[^<>]*>/g, "").split(",").map(part => part.trim().split(".").at(-1)!);
+      }
       return;
     }
     const arrow = line.match(/^\s*(export\s+)?const\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>|\w+\s*=>)/);
@@ -80,7 +84,7 @@ export const typescript: LanguageAdapter = {
     }
     function record(n: any, name: string, kind: SymbolKind, exported: boolean, collect = true) {
       const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line;
-      add(name, kind, line, sf.getLineAndCharacterOfPosition(n.end).line, exported, collect ? calls(n, name.split(".").at(-1)!) : []);
+      return add(name, kind, line, sf.getLineAndCharacterOfPosition(n.end).line, exported, collect ? calls(n, name.split(".").at(-1)!) : []);
     }
     for (const n of sf.statements) {
       const exp = !!n.modifiers?.some((m: any) => m.kind === ts.SyntaxKind.ExportKeyword);
@@ -90,7 +94,9 @@ export const typescript: LanguageAdapter = {
       if (n.moduleSpecifier?.text) result.imports.push(n.moduleSpecifier.text);
       if (ts.isExportDeclaration(n) && !n.exportClause) result.exports.push("*");
       if (ts.isClassDeclaration(n)) {
-        record(n, name, "class", exp, false);
+        const sym = record(n, name, "class", exp, false);
+        const clause = n.heritageClauses?.find((c: any) => c.token === ts.SyntaxKind.ImplementsKeyword);
+        if (clause) sym.contracts = clause.types.map((t: any) => t.expression.getText(sf).split(".").at(-1));
         for (const member of n.members) if (ts.isMethodDeclaration(member) && member.name?.text)
           record(member, name + "." + member.name.text, "method", exp && !member.modifiers?.some((m: any) => m.kind === ts.SyntaxKind.PrivateKeyword));
       } else if (ts.isFunctionDeclaration(n)) record(n, name, "function", exp);

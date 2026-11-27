@@ -22,7 +22,7 @@ node --test tests/gentle-graph.test.ts
 node --input-type=module -e "import { graphInspect } from './lib/gentle-graph/index.ts'; console.log(graphInspect('syncGraphIndex'))"
 ```
 
-Cada worktree conserva su índice en `.gentle-graph/index.json`. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
+Cada worktree conserva su índice en `.gentle-graph/index.json` y pasa a SQLite WAL cuando supera 2000 archivos indexados. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
 
 [Integrar con Gentle Shell y configurar subagentes](docs/gentle-graph-integration.md)
 
@@ -54,3 +54,14 @@ El índice reconoce TS/JS, Python, Go, Rust, C# y XAML. Puedes consultar método
 La guía combina carpetas, manifiestos y símbolos ya indexados para reconocer capas, slices y patrones de UI. El perfil por worktree se guarda en `.gentle-graph/profile.json`. Para soluciones .NET incluye los paquetes y las referencias entre proyectos declaradas en los archivos `.csproj`. Las reglas de `guide.json` y los contratos del proyecto tienen prioridad sobre las fronteras inferidas.
 
 Por defecto se usa TypeScript del host cuando está disponible. Establece `GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT=1` para usar el compilador de un proyecto de confianza o `GENTLE_GRAPH_DISABLE_TOOLCHAINS=1` para usar solo el parser léxico.
+
+[Guía de pruebas A/B, rendimiento y aislamiento de subagentes](docs/gentle-graph-integration.md)
+
+## Cómo sumar un lenguaje
+
+1. Crea un módulo en `lib/gentle-graph/languages/` que implemente `LanguageAdapter`.
+2. Declara sus extensiones, extrae símbolos con líneas de origen e implementa `isTestFile`.
+3. Reutiliza los helpers de `lexer-core.ts` y añade `resolveRelativeImport` cuando corresponda.
+4. Registra el adaptador en `registry.ts` para que lo descubran el indexador completo y JIT.
+5. Añade un fixture realista en `tests/languages.test.ts` con un caso positivo y uno que descarte falsos enlaces.
+6. Ejecuta `pnpm typecheck` y `pnpm test` con las herramientas del host. Esta distribución declara **Node 24 o superior**. Node 22 queda fuera de su soporte declarado.

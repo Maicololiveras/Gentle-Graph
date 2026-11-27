@@ -31,6 +31,7 @@ export function formatInspect(matches: InspectResult[]): string {
   if (matches[0].alternatives) return compact(["Ambiguous symbol. Inspect one file#symbol:", ...matches[0].alternatives], 3000);
   return compact(matches.flatMap(m => [
     `${m.symbol.file}:${m.symbol.line}  ${m.symbol.signature}`,
+    field("Implemented by", refs(m.implementations ?? [])),
     ...(m.evidence ?? []).map(s => s.role + " " + s.file + ":" + s.line + " → " + [...(s.via ?? []), s.text ?? s.qualified ?? s.target].join(" → ")),
     field("Calls", refs(m.callees)), field("Called by", refs(m.callers)), m.snippet
   ]), 3000);

@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadArchGuide, saveArchGuide } from "./store.ts";
+import { loadArchGuide, updateArchGuide } from "./store.ts";
 import type { GraphIndex, GuideRecommendation, ModuleRecommendation, PatternEntry } from "./types.ts";
 
 const STOP_WORDS = new Set([
@@ -150,7 +150,6 @@ export function registerPattern(
   files: string[] = []
 ): PatternEntry {
   const resolved = path.resolve(projectRoot);
-  const guide = loadArchGuide(resolved);
   const id = `${domain.trim().toLowerCase()}:${entry.trim()}`;
   const record: PatternEntry = {
     id,
@@ -162,13 +161,10 @@ export function registerPattern(
     stale: false
   };
 
-  const existingIdx = guide.patterns.findIndex((p) => p.id === id);
-  if (existingIdx >= 0) {
-    guide.patterns[existingIdx] = record;
-  } else {
-    guide.patterns.push(record);
-  }
-
-  saveArchGuide(resolved, guide);
+  updateArchGuide(resolved, guide => {
+    const existingIdx = guide.patterns.findIndex((p) => p.id === id);
+    if (existingIdx >= 0) guide.patterns[existingIdx] = record;
+    else guide.patterns.push(record);
+  });
   return record;
 }

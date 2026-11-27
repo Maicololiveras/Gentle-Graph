@@ -251,9 +251,21 @@ export function graphInspect(
       if (callerTargets.size === 0) break;
     }
 
+    const implementations: SymbolRef[] = [];
+    if (rootSym.kind === "interface") {
+      const language = index.files[rootSym.file].language;
+      const peers = (byName.get(rootSym.name) ?? []).filter(s => s.kind === "interface" && index.files[s.file].language === language);
+      for (const candidate of getLookup(index).implementationsByContract.get(rootSym.name) ?? []) {
+        if (index.files[candidate.file].language !== language) continue;
+        // An unqualified base name alone cannot attribute a homonymous contract.
+        if (peers.length !== 1) continue;
+        implementations.push({ name: candidate.name, file: candidate.file, line: candidate.line, hop: 1 });
+      }
+    }
     return {
       ...(exact.length > 1 && !byId ? { alternatives: exact.map(s => s.id) } : {}),
       evidence,
+      implementations,
       symbol: rootSym,
       snippet: readBoundedSnippet(resolved, rootSym.file, rootSym.line, rootSym.endLine),
       callees,

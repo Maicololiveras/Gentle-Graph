@@ -42,7 +42,13 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   const dirs = new Set<string>();
   const slices = new Set<string>();
   const folders = new Set<string>();
-  for (const file of knownFiles) folders.add(file.slice(0, Math.max(0, file.lastIndexOf("/"))));
+  let previousFolder = "";
+  for (const file of knownFiles) {
+    const end = file.lastIndexOf("/");
+    if (end < 0 || (end === previousFolder.length && file.startsWith(previousFolder))) continue;
+    previousFolder = file.slice(0, end);
+    folders.add(previousFolder);
+  }
   for (const folder of folders) {
     for (const part of folder.toLowerCase().split(/[/.]/)) dirs.add(part);
     const slice = folder.match(/^(.*?(?:^|\/)(?:features|modules)\/[^/]+)/i);

@@ -278,3 +278,41 @@ it("switches above 500 files, respects gitignore and scopes nested projects", t 
   const inner = syncGraphIndex(nested);
   assert.deepEqual(inner.knownFiles, ["-active.ts"]);
 });
+
+it("retains independent registrations from simultaneous processes", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const root = makeTempProject();
+  try {
+    const module = new URL("../lib/gentle-graph/arch-guide.ts", import.meta.url).href;
+    await Promise.all(Array.from({length: 8}, (_, i) => run(process.execPath, ["--input-type=module", "-e",
+      'import {registerPattern} from '+JSON.stringify(module)+'; registerPattern(process.argv[1],"domain",process.argv[2],"reuse")', root, "file"+i])));
+    const guide = JSON.parse(fs.readFileSync(path.join(root,".gentle-graph/guide.json"),"utf8"));
+    assert.equal(new Set(guide.patterns.map(p=>p.entry)).size, 8);
+  } finally { fs.rmSync(root,{ recursive:true, force:true }); }
+});
+
+it("reopens a large WAL index, updates and removes individual entries", async () => {
+  const { loadGraphIndex, saveGraphIndex } = await import("../lib/gentle-graph/store.ts");
+  const root = makeTempProject();
+  try {
+    const index = loadGraphIndex(root);
+    for (let i=0; i<2001; i++) {
+      const file = i+".ts";
+      index.files[file] = {path:file,language:"typescript",mtimeMs:1,sha256:"fixture",imports:[],exports:[],symbols:[]};
+    }
+    saveGraphIndex(root,index,new Set(Object.keys(index.files)));
+    assert(fs.existsSync(path.join(root,".gentle-graph/index.sqlite")));
+    clearMemoryCache(root);
+    const reopened = loadGraphIndex(root);
+    assert.equal(Object.keys(reopened.files).length,2001);
+    delete reopened.files["1.ts"];
+    reopened.files["2.ts"].mtimeMs++;
+    saveGraphIndex(root,reopened,new Set(["1.ts","2.ts"]));
+    clearMemoryCache(root);
+    const updated = loadGraphIndex(root);
+    assert.equal(updated.files["1.ts"],undefined);
+    assert.equal(updated.files["2.ts"].mtimeMs,2);
+  } finally { clearMemoryCache(root); fs.rmSync(root,{ recursive:true, force:true }); }
+});
