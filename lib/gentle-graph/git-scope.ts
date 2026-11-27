@@ -181,10 +181,9 @@ export function gitGrepFilesSync(root:string,literal:string|string[],maxFiles=80
 }
 
 // Read the worktree once for both the target and the reverse-import projection.
-export async function grepImpactProjection(root:string, term:string, staged=false){
+export async function grepImpactProjection(root:string, term:string){
   if(!/^[a-z][a-zA-Z0-9_]*$/.test(term))return null;
   const args=[...projectionArgs.slice(0,projectionArgs.indexOf("--")+1),...grepArgs.slice(grepArgs.indexOf("--")+1)];
-  if(staged)args[args.indexOf("--untracked")]="--cached";
   const rows=await requireGitPaths(root,args,projectionPattern+term+"\n");
   if(!rows)return null;
   const hits=new Set<string>();
@@ -203,18 +202,6 @@ export async function grepImpactProjection(root:string, term:string, staged=fals
     file=row.slice(newline+1);
   }
   return {hits:[...hits],projection};
-}
-
-// A clean index and worktree agree for these literal searches through CRLF
-// conversion. Smudge filters, ident expansion and alternate encodings may
-// change the searchable text even when Git reports a clean file.
-export async function plainCheckoutText(root:string,files:string[]){
-  const rows=await requireGitPaths(root,["check-attr","-z","--all","--stdin"],files.join("\0")+"\0");
-  if(rows===null)return false;
-  for(let i=1;i<rows.length;i+=3){
-    if(["filter","ident","working-tree-encoding"].includes(rows[i]))return false;
-  }
-  return true;
 }
 
 export interface GitSnapshot {
@@ -312,13 +299,10 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
       const projectImports=impact && fs.existsSync(path.join(root,"tsconfig.json"));
-      const useObjects=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!);
-      // Search packed objects while Git validates worktree status. This
-      // avoids two processes opening the same thousands of NTFS files.
-      const combined=useObjects ? Promise.all([
-        grepImpactProjection(root,inspectTerm!,true),
-        plainCheckoutText(root,tracked)
-      ]).then(([result,plain])=>plain?result:null).catch(()=>null) : undefined;
+      // Search the bytes the parser sees, including smudged files. This
+      // eliminates the separate check-attr pass over every tracked path.
+      const combined=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!)
+        ? grepImpactProjection(root,inspectTerm!).catch(()=>null) : undefined;
       // status reports staged, unstaged and untracked changes together. With
       // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
