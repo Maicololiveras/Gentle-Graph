@@ -65,3 +65,15 @@ Por defecto se usa TypeScript del host cuando está disponible. Establece `GENTL
 4. Registra el adaptador en `registry.ts` para que lo descubran el indexador completo y JIT.
 5. Añade un fixture realista en `tests/languages.test.ts` con un caso positivo y uno que descarte falsos enlaces.
 6. Ejecuta `pnpm typecheck` y `pnpm test` con las herramientas del host. Esta distribución declara **Node 24 o superior**. Node 22 queda fuera de su soporte declarado.
+
+## Prueba local exigente sobre Gentle Shell
+
+Con Node 24+, Git y tu Pi autenticado, ejecuta desde Gentle Graph:
+
+```powershell
+node scripts/bench-gentle-shell.mjs "C:\repos\gentle-shell" "proveedor/modelo" 1
+```
+
+Usa el identificador exacto de tu modelo. Un par equivale a dos tareas completas y puede consumir saldo. El script detecta Pi en las dependencias de Gentle Shell. Si usas otra instalación, configura `PI_CLI_JS` con la ruta absoluta a su entrada JavaScript. Cada variante recibe el mismo HEAD versionado, la misma tarea de implementación y cuatro comprobaciones externas. La base dispone de las herramientas normales de Pi. La segunda variante añade Gentle Graph. El comparador exige uso observado de las tres herramientas de lectura y registra los nombres de las herramientas activas, llamadas y tiempos individuales.
+
+Para una medición más estable, cambia el último argumento a 4. Se alterna el orden tras sortear el primero. Las sesiones son nuevas y el proveedor puede reutilizar su caché. Consulta `summary.json` en la carpeta de resultados que imprime el script. Contiene tokens de entrada, salida, caché leída/escrita, tiempo del agente y del verificador, y reducción porcentual frente a la base. El costo USD es la estimación de Pi cuando está disponible. Un valor nulo significa que no se pudo calcular. Revisa también ambos parches para evaluar calidad, reutilización y las pruebas de regresión añadidas. Los tests de aceptación son específicos de esta tarea.
