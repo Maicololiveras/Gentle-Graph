@@ -2,6 +2,7 @@
 // share the index's second. Certify only entries with precise kernel timestamps
 // predating the index. Git handles ties, coarse timestamps and other formats.
 import fs from "node:fs";
+import {createHash} from "node:crypto";
 import path from "node:path";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
 
@@ -134,4 +135,47 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
   }
   if ([...folders].reduce((sum,f)=>sum+f.length+20,0)>32000)return false;
   return [".",...[...folders].map(name=>":(exclude,literal)"+name)];
+}
+
+// Windows Git indexes may store timestamps at whole-second precision. For
+// timestamp ties compare working bytes with the indexed blob. A transformed,
+// missing, oversized or uncertain file remains a candidate for the graph.
+export async function trackedGuideChanges(root:string,layout:GitLayout,source:(file:string)=>boolean){
+  const indexPath=path.join(layout.dir,"index");
+  const before=fs.statSync(indexPath,{bigint:true,throwIfNoEntry:false});
+  if(!before)return;
+  const offsets:number[]=[];
+  let data:Buffer;
+  const files=readTrackedIndexPaths(root,layout,(_file,bytes,offset)=>{data=bytes;offsets.push(offset);});
+  if(!files || files.length>5000)return;
+  const changed:string[]=[];
+  let next=0;
+  const second=1000000000n;
+  async function scan(){
+    while(next<files!.length){
+      const i=next++,file=files![i],offset=offsets[i];
+      const abs=path.join(root,file);
+      try{
+        const stat=await fs.promises.lstat(abs,{bigint:true});
+        const mtime=BigInt(data.readUInt32BE(offset+8));
+        const ns=data.readUInt32BE(offset+12);
+        const mode=data.readUInt32BE(offset+24);
+        if(stat.isFile() && (mode&0o170000)===0o100000 && stat.size===BigInt(data.readUInt32BE(offset+36))){
+          const birth=BigInt(data.readUInt32BE(offset));
+          if(stat.birthtimeNs/second===birth && stat.mtimeNs/second===mtime &&
+              (!ns || stat.mtimeNs%second===BigInt(ns)) && mtime<before!.mtimeNs/second &&
+              stat.ctimeNs<before!.mtimeNs)continue;
+          if(source(file) && stat.size<=256n*1024n){
+            const bytes=await fs.promises.readFile(abs);
+            const digest=createHash("sha1").update("blob "+bytes.length+"\0").update(bytes).digest();
+            if(digest.equals(data.subarray(offset+40,offset+60)))continue;
+          }
+        }
+      }catch{/* A missing or concurrently replaced file must be revisited. */}
+      changed.push(file);
+    }
+  }
+  await Promise.all(Array.from({length:16},scan));
+  const after=fs.statSync(indexPath,{bigint:true,throwIfNoEntry:false});
+  if(before.ctimeNs===after?.ctimeNs && before.ino===after.ino)return {files,changed};
 }

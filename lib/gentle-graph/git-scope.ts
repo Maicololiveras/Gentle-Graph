@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import {rootLayout,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
+import {rootLayout,trackedGuideChanges,verifiedCleanIndex,verifiedRacyFolders,type GitLayout} from "./clean-index.ts";
 import {projectionArgs,projectionPattern} from "./git-projection.ts";
 import { promisify } from "node:util";
 import {readTrackedIndexPaths} from "./git-index-paths.ts";
@@ -345,12 +345,14 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
-        const state=await gitSnapshot(root);
-        if(state){
-          const untracked=state.untracked??[];
-          const inventory={files:tracked.concat(untracked),untracked};
-          state.inventory=inventory;
-          return [state,inventory];
+        const [trackedState,untracked,staged]=await Promise.all([
+          trackedGuideChanges(root,layout,isIndexableFile),
+          requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
+        ]);
+        if(trackedState && untracked && staged){
+          const prepared=await snapshotFromChanges(root,layout,trackedState.files,untracked,staged,trackedState.changed);
+          if(prepared)return prepared;
         }
       }
       // A single unqualified lowercase-initial name is the first literal of

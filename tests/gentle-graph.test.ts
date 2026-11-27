@@ -508,6 +508,10 @@ it("matches Git's tracked, untracked, staged and unstaged paths across index lay
   fs.writeFileSync(path.join(root,"f2.ts"),"export const dirty = true;");
   fs.writeFileSync(path.join(root,"pending.ts"),"export const pending = true;");
   const plain=gitInventory(root);
+  const {trackedGuideChanges,rootLayout}=await import("../lib/gentle-graph/clean-index.ts");
+  const changes=await trackedGuideChanges(root,rootLayout(root),file=>file.endsWith(".ts"));
+  assert.ok(changes.changed.includes("f2.ts"));
+  assert.ok(!changes.changed.includes("f1.ts")); // clean against the staged version
   const native=gitWorkspaceInventory(root);
   assert.deepEqual(native.files,plain.files);
   assert.deepEqual(new Set(native.dirty),new Set(gitDirtyFilesSync(root,plain.untracked)));
