@@ -302,11 +302,19 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
     if(tracked){
       const name=inspectTerm.split("#").at(-1) ?? inspectTerm;
       const projected=impact && /^[a-z][a-zA-Z0-9_]*$/.test(name) && fs.existsSync(path.join(root,"tsconfig.json"));
-      const [untracked,search]=await Promise.all([
+      // Git can search tracked working-tree bytes directly without its
+      // untracked directory traversal. Include untracked source when present.
+      const searchFiles=async(trackedOnly:boolean)=>{
+        if(projected)return grepImpactProjection(root,name,trackedOnly);
+        const args=trackedOnly?grepArgs.filter(arg=>arg!=="--untracked"):grepArgs;
+        const rows=await requireGitPaths(root,args,name+"\n");
+        return rows && {hits:rows.filter(isIndexableFile),projection:undefined};
+      };
+      const [untracked,trackedSearch]=await Promise.all([
         requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
-        projected ? grepImpactProjection(root,name) :
-          gitGrepFiles(root,name,Infinity,null).then(hits=>hits && ({hits,projection:undefined}))
+        searchFiles(true)
       ]);
+      const search=untracked?.some(isIndexableFile)?await searchFiles(false):trackedSearch;
       if(untracked && search){
         const state=await snapshotFromChanges(root,layout,tracked,untracked,[],search.hits);
         if(state){
@@ -326,18 +334,14 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
       const inventorySnapshot = async ():Promise<[GitSnapshot,Inventory]|undefined> => {
-        // ls-files can report both unstaged and untracked paths in the same
-        // process. Keep the cached diff separate for staged-only changes.
-        const [rows,staged]=await Promise.all([
-          requireGitPaths(root,["ls-files","-t","--modified","--deleted","--others","--exclude-standard","-z","--","."]),
+        // diff-files preloads tracked stats using Git's parallel index reader.
+        // Keep untracked discovery independent of the tracked stat sweep.
+        const [changed,untracked,staged]=await Promise.all([
+          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."]),
+          requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
           requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
         ]);
-        if(!rows || !staged)return;
-        const changed:string[]=[],untracked:string[]=[];
-        for(const row of rows){
-          if(row.startsWith("? "))untracked.push(row.slice(2));
-          else changed.push(row.slice(2));
-        }
+        if(!changed || !untracked || !staged)return;
         return snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
       };
       if(!inspectTerm && !impact){
