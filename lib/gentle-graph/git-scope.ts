@@ -231,7 +231,7 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
   if(layout && process.platform==="win32"){
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
-      if(!inspectTerm && !impact){
+      const inventorySnapshot = async ():Promise<[GitSnapshot,Inventory]|undefined> => {
         // Independent Git plumbing reads can overlap the NTFS directory scan
         // with tracked-file verification. Preserve staged and unstaged paths
         // separately, including a staged edit undone only in the worktree.
@@ -244,13 +244,17 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
           const prepared=await snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
           if(prepared)return prepared;
         }
+      };
+      if(!inspectTerm && !impact){
+        const prepared=await inventorySnapshot();
+        if(prepared)return prepared;
       }
       // A single unqualified lowercase-initial name is the first literal of
       // inspect. Overlap its read-only search with status on large worktrees.
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
       const [state, hits, projection] = await Promise.all([
-        gitSnapshot(root),
+        impact ? inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)) : gitSnapshot(root),
         simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
         impact && fs.existsSync(path.join(root,"tsconfig.json")) ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
@@ -259,7 +263,7 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
         state.greps.set(JSON.stringify([inspectTerm]), hits);
       }
       if(state){
-        const untracked=state.untracked??[];
+        const untracked=state.inventory?.untracked??state.untracked??[];
         const inventory={files:[...tracked,...untracked],untracked};
         state.inventory=inventory;
         return [state,inventory];
