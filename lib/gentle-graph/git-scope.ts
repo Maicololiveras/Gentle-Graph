@@ -16,6 +16,27 @@ const grepArgs = ["grep", "--untracked", "-I", "-z", "-l", "-F", "-f", "-", "--"
   ":(exclude,glob)**/.gentle-graph/**", ":(exclude,glob)**/node_modules/**"];
 const layoutArgs = ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "--show-prefix"];
 
+// Git for Windows exposes cmd/git.exe as a launcher. Use the sibling native
+// executable only when the first git.exe on PATH belongs to that layout.
+let resolvedGit:{searchPath:string;executable:string}|undefined;
+function gitExecutable(){
+  if(process.platform!=="win32")return "git";
+  const searchPath=process.env.PATH??"";
+  if(resolvedGit?.searchPath===searchPath)return resolvedGit.executable;
+  let executable="git";
+  for(const entry of searchPath.split(path.delimiter)){
+    const dir=entry.replace(/^"|"$/g,"");
+    if(!dir || !fs.existsSync(path.join(dir,"git.exe")))continue;
+    if(path.basename(dir).toLowerCase()==="cmd"){
+      const native=path.resolve(dir,"../mingw64/bin/git.exe");
+      if(fs.existsSync(native))executable=native;
+    }
+    break;
+  }
+  resolvedGit={searchPath,executable};
+  return executable;
+}
+
 type Inventory = { files:string[]; untracked:string[]; dirty?:string[] };
 type GitFailure = { code?:string|number; status?:number; killed?:boolean; stderr?:string|Buffer };
 export class GitScopeError extends Error {
@@ -44,7 +65,7 @@ function gitFailure(root:string, args:string[], failure:GitFailure):null|string 
 
 function gitTextSync(root:string,args:string[],input?:string,timeout=4000):string|null {
   try {
-    return execFileSync("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,
+    return execFileSync(gitExecutable(),args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,
       maxBuffer:MAX_OUTPUT,input,stdio:[input===undefined?"ignore":"pipe","pipe","pipe"],env:gitEnv()});
   } catch(error) {return gitFailure(root,args,error);}
 }
@@ -74,7 +95,7 @@ export async function requireGitPaths(root:string,args:string[],input?:string,ti
 async function executeGitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
   const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
   try {
-    const result=run("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
+    const result=run(gitExecutable(),args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
     result.child.stdin?.on("error",()=>{}).end(input);
     return (await result).stdout.split("\0").filter(Boolean);
   } catch(error){

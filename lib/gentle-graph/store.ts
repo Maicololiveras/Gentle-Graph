@@ -234,7 +234,9 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   // Publish the first JSON snapshot without allocating a second lock file.
   // A hard link installs complete bytes exclusively. Contending creators
   // merge their deltas under the regular lock when the destination exists.
-  if(stamps.get(root)==="absent" && !jsonOnly(root) &&
+  // On NTFS publishing a second hard link and immediately removing the
+  // first can stall. Use the same locked rename as subsequent snapshots.
+  if(process.platform!=="win32" && stamps.get(root)==="absent" && !jsonOnly(root) &&
       Object.keys(index.files).length<=SQL_FILE_THRESHOLD && !fs.existsSync(file)){
     const tmp=file+"."+randomUUID()+".tmp";
     try{
