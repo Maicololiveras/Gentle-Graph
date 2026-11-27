@@ -34,7 +34,11 @@ jobs:
           npm install --prefix $prefix --no-audit --no-fund @colbymchenry/codegraph@1.6.4
           if ($LASTEXITCODE) { throw 'CodeGraph installation failed' }
           $env:PATH = "$(Join-Path $prefix 'node_modules/.bin');$env:PATH"
-          $cli = Join-Path $prefix 'node_modules/@colbymchenry/codegraph/dist/bin/codegraph.js'
+          $package = Join-Path $prefix 'node_modules/@colbymchenry/codegraph'
+          $metadata = Get-Content (Join-Path $package 'package.json') -Raw | ConvertFrom-Json
+          $cli = (Resolve-Path (Join-Path $package $metadata.bin.codegraph)).Path
+          Write-Host "Testing $($metadata.name) $($metadata.version) from $cli"
+
           $node = (Get-Command node).Source
           $env:GENTLE_ABC_MCP_CONFIG = Join-Path $env:RUNNER_TEMP codegraph-config.json
           @{mcpServers=@{codegraph=@{command=$node;args=@($cli,'serve','--mcp')}}} | ConvertTo-Json -Depth 5 | Set-Content $env:GENTLE_ABC_MCP_CONFIG
@@ -44,7 +48,11 @@ jobs:
           }
           $before = Inventory
           node scripts/bench-gentle-shell.mjs --abc benchmark-host --cleanup-check
-          if ($LASTEXITCODE) { throw 'Cleanup check failed' }
+          if ($LASTEXITCODE) {
+            $dir = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Gentle-Graph/benchmarks/abc-0c286bf-c9b59ea'
+            Get-ChildItem $dir -Recurse -Include prepare.log,preflight.log,cleanup.json,clean-typecheck.txt | ForEach-Object { Write-Host $_.FullName; Get-Content $_.FullName -Tail 15 }
+            throw 'Cleanup check failed'
+          }
           if ((Inventory) -cne $before) { throw 'Worktree or temp directory inventory changed' }
           $output = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'Gentle-Graph/benchmarks/abc-0c286bf-c9b59ea'
           $run = Get-ChildItem $output -Directory | Sort-Object Name -Descending | Select-Object -First 1
