@@ -47,13 +47,13 @@ To add CodeGraph to this generic comparator, set `CODEGRAPH_PI_EXTENSION` to its
 
 ## Windows A/B/C experiment
 
-The dedicated nine-session launcher is available in [PR #10 at revision 758ba5c](https://github.com/Maicololiveras/Gentle-Graph/tree/758ba5c89945a04548ec125a99c8a19c3b3b732f). Run the following commands from a checkout containing that launcher. Its revision is independent of the measured extension.
+Run the nine-session launcher from the Gentle Graph checkout. The launcher pins both repositories by commit, independently of its own revision.
 
 | Arm | Configuration |
 | --- | --- |
 | A | Gentle Shell at `c9b59eab57a56224c76b99e1caa9bb94cb113dc8` |
 | B | Same host plus CodeGraph over stdio MCP with direct exposure |
-| C | Same host plus Gentle Graph at `efeed94d8cf59ea65c7f26251b01551ed2fd29df` |
+| C | Same host plus Gentle Graph at `0c286bfe967bc43a141284054834db5e5a0f1225` |
 
 Use Windows, Node 24, Git, TypeScript 5.9.3, Pi 1.6.0 and a working `codegraph --version`. Both Git clones must contain the pinned commits. The launcher uses the host's installed modules by default. Set `GENTLE_ABC_MODULES` to an alternate modules directory if necessary. If the host supplies a different Pi version, set `GENTLE_ABC_PI_PACKAGE` to the isolated 1.6.0 **package directory containing package.json**.
 
@@ -63,10 +63,10 @@ Configure a working `mcpServers.codegraph` stdio entry in Pi's `mcp.json` or poi
 node scripts/bench-gentle-shell.mjs --abc "C:\repos\gentle-shell"
 ```
 
-Authorize the device code in your browser when prompted. The launcher uses a dedicated in-memory OAuth session. All nine worktrees and Pi homes undergo a clean typecheck and an RPC model/tool check before the first prompt. Append `--preflight-only` if you only want those checks. Each invocation starts a new run.
+Authorize the device code in your browser when prompted. The launcher uses a dedicated in-memory OAuth session. All nine worktrees and Pi homes undergo a clean typecheck and an RPC model/tool check before the first prompt. Append `--preflight-only` if you only want those checks. Use `--cleanup-check` to exercise the same nine RPC loadouts and cleanup with a synthetic in-memory credential. This mode skips device authorization, sends no model prompts and does not verify provider access. Each invocation starts a new run.
 
 The launcher uses `openai-codex/gpt-6.2-sol` with high reasoning and the original task in orders ABC, BCA and CAB. It runs the pinned verifier and TypeScript separately. It retains verification failures and computes totals over rounds where all three arms were valid. A missing first edit is recorded as unavailable. Nested tool calls use Pi's parent call IDs.
 
-Look under the Windows Documents folder in `Gentle-Graph\benchmarks\abc-efeed94-c9b59ea`. Each run has its own evidence directory. Read `summary.json` and `informe-abc.md` alongside per-arm transcripts, patches and verification logs. Savings are `100 × (reference − C) / reference`; positive values mean C used less. A preflight failure produces no comparable rounds.
+Look under the Windows Documents folder in `Gentle-Graph\benchmarks\abc-0c286bf-c9b59ea`. Each run has its own evidence directory. Read `summary.json` and `informe-abc.md` alongside per-arm transcripts, patches and verification logs. Savings are `100 × (reference − C) / reference`; positive values mean C used less. A preflight failure produces no comparable rounds.
 
 [Project overview](../README.md) · [Contributor checks](../CONTRIBUTING.md)
