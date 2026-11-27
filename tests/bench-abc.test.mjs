@@ -123,3 +123,32 @@ test("cleanup removes an unregistered CodeGraph directory and preserves sibling 
   assert.ok(fs.existsSync(path.join(sibling,".git")));
   assert.ok(git("worktree","list","--porcelain").toString().includes("historical"));
 });
+
+test("Windows job releases an orphan that holds a CodeGraph worktree open",{skip:process.platform!=="win32",timeout:30000},async t=>{
+  const {openWindowsJob}=await import("../scripts/bench-shell/abc-job.mjs");
+  const {runJobChild}=await import("../scripts/bench-shell/abc-auth.mjs");
+  const {setTimeout:delay}=await import("node:timers/promises");
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"abc-job-test-"));
+  const arm=path.join(root,"r1-gs-codegraph");
+  fs.mkdirSync(arm);
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true,maxRetries:6,retryDelay:200}));
+  const worker=path.join(root,"mcp.cjs");
+  fs.writeFileSync(worker,`process.once("message",()=>{
+    process.disconnect();
+    const p=require("node:child_process").spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});
+    require("node:fs").writeFileSync("pid",String(p.pid));
+    p.unref();
+  })`);
+  const job=await openWindowsJob();
+  try {
+    assert.equal(await runJobChild([worker],arm,process.env,path.join(root,"session.log"),"start",false,job),0);
+    const pid=Number(fs.readFileSync(path.join(arm,"pid")));
+    let stopped=false;
+    for(let i=0;i<50 && !stopped;i++){
+      try{process.kill(pid,0);}catch(error){if(error.code!=="ESRCH")throw error;stopped=true;}
+      if(!stopped)await delay(100);
+    }
+    assert.ok(stopped,"MCP descendant should exit on job release");
+    fs.rmSync(arm,{recursive:true});
+  } finally {await job.close();}
+});

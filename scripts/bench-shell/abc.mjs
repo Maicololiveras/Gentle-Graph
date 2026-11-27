@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 import {execFileSync, spawnSync} from "node:child_process";
-import {deviceSession, runPi} from "./abc-auth.mjs";
+import {deviceSession, runPi, runJobChild} from "./abc-auth.mjs";
 import {sessionMetrics} from "./session-metrics.mjs";
 import {capturePatch, cleanWorktrees} from "./abc-worktree.mjs";
+import {openWindowsJob} from "./abc-job.mjs";
 import {reportABC} from "./abc-report.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -104,7 +105,10 @@ export async function runABC(argv){
     os:os.version()+" "+os.release()+" "+os.arch(),node:process.version,pi,piPackage:pkg,piBin:bin,piRuntime:cli,modules,typescript:ts,codegraph:cgVersion,binary,orders,arms:names,rows:[]};
   const environments=[];
   const retained=new Set();
+  const homes=[];
+  let job;
   try{
+    job=await openWindowsJob();
     const engine=path.join(temp,"engine");
     checkout(graphRepo,engine,graphSHA);
     const accessForPi=await deviceSession(cli);
@@ -115,6 +119,7 @@ export async function runABC(argv){
       const folder=path.join(out,id),home=path.join(temp,id+"-home"),agent=path.join(home,".pi","agent");
       const sessions=path.join(folder,"sessions");
       fs.mkdirSync(sessions,{recursive:true});
+      homes.push(home);
       fs.mkdirSync(agent,{recursive:true});
       checkout(repo,cwd,shellSHA);
       save(path.join(agent,"settings.json"),{packages:[cwd]});
@@ -140,10 +145,12 @@ export async function runABC(argv){
       const setup=performance.now();
       if(arm==="B" && env.CODEGRAPH_PREPARE_ARGV){
         const [cmd,...params]=JSON.parse(env.CODEGRAPH_PREPARE_ARGV);
-        run(cmd,params.map(s=>s.replaceAll("{worktree}",cwd)),{cwd,env});
+        const argv=[path.join(here,"abc-prepare.mjs"),cmd,...params.map(s=>s.replaceAll("{worktree}",cwd))];
+        const code=await runJobChild(argv,cwd,env,path.join(folder,"prepare.log"),"start",false,job);
+        if(code!==0)throw Error("CodeGraph preparation failed at "+folder);
       }
       const status=await runPi(cli,[...args,"--mode","rpc","--no-session"],cwd,{...env,GENTLE_ABC_PROBE:"1"},
-        path.join(folder,"preflight.log"),await accessForPi(),true);
+        path.join(folder,"preflight.log"),await accessForPi(),true,job);
       if(status!==0)throw Error("Pi preflight failed at "+folder);
       const state=read(path.join(folder,"preflight-tools.json"));
       if(!state.available || !checkTools(state,arm))throw Error("Invalid model, reasoning, host or graph loadout at "+folder);
@@ -159,7 +166,7 @@ export async function runABC(argv){
       console.log("Round",e.r,names[arm]);
       const access=await accessForPi();
       const start=Date.now(),begin=performance.now();
-      const exit=await runPi(cli,[...e.args,"-p",task],cwd,{...env,GENTLE_ABC_PROBE:"0"},path.join(folder,"agent-output.txt"),access);
+      const exit=await runPi(cli,[...e.args,"-p",task],cwd,{...env,GENTLE_ABC_PROBE:"0"},path.join(folder,"agent-output.txt"),access,false,job);
       const elapsedMs=performance.now()-begin;
       retained.add(cwd);
       save(path.join(folder,"agent-timing.json"),{start,elapsedMs,agentExit:exit,cwd});
@@ -201,7 +208,14 @@ export async function runABC(argv){
     reportABC(manifest);
     throw error;
   }finally{
+    const controllerErrors=[];
+    try {await job?.close();} catch(error){controllerErrors.push({cwd:temp,error:String(error)});}
     const errors=await cleanWorktrees(worktrees,(root,cwd)=>git(root,"worktree","remove","--force",cwd),retained);
+    errors.push(...controllerErrors);
+    for(const home of homes){
+      try {fs.rmSync(home,{recursive:true,force:true,maxRetries:6,retryDelay:200});}
+      catch(error){errors.push({cwd:home,error:String(error)});}
+    }
     if(!errors.length && !retained.size){
       try {fs.rmSync(temp,{recursive:true,force:true,maxRetries:6,retryDelay:200});}
       catch(error){errors.push({cwd:temp,error:String(error)});}

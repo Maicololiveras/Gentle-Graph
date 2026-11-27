@@ -34,19 +34,34 @@ export async function deviceSession(cli) {
   };
 }
 
-export async function runPi(cli, args, cwd, env, log, access, probe = false) {
+export async function runPi(cli, args, cwd, env, log, access, probe = false, job) {
   if (!access) throw Error("Missing benchmark access grant.");
+  const wrapper=fileURLToPath(new URL("./abc-pi.mjs",import.meta.url));
+  return runJobChild([wrapper,cli,...args],cwd,env,log,access,probe,job);
+}
+
+export async function runJobChild(args,cwd,env,log,message,probe,job) {
   const fd = fs.openSync(log, "w");
+  let attached=false;
   try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [fileURLToPath(new URL("./abc-pi.mjs", import.meta.url)), cli, ...args], {
+      const child = spawn(process.execPath, args, {
         cwd, env, windowsHide: true, stdio: ["pipe", fd, fd, "ipc"],
       });
+      const exited = new Promise((resolve,reject)=>{
+        child.once("error",reject);
+        child.once("exit",code=>resolve(code ?? 1));
+      });
+      exited.catch(()=>{});
       const timer = probe ? setTimeout(() => child.kill(), 90_000) : undefined;
-      child.once("error", reject);
-      child.once("close", code => { clearTimeout(timer); resolve(code ?? 1); });
-      child.send(access, error => { if (error) { child.kill(); reject(error); } });
-      if (!probe) child.stdin.end();
-    });
-  } finally { fs.closeSync(fd); }
+      try {
+        if(job){await job.attach(child.pid);attached=true;}
+        await new Promise((resolve,reject)=>child.send(message,error=>error?reject(error):resolve()));
+        if (!probe) child.stdin.end();
+        return await exited;
+      } catch(error){child.kill();throw error;}
+      finally {clearTimeout(timer);}
+  } finally {
+    fs.closeSync(fd);
+    if(attached)await job.release();
+  }
 }
