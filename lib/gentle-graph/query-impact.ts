@@ -144,7 +144,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
   }
   const projected = scoped && scope.mode==="jit" ? yield moduleProjection : null;
   const modular=scoped && (scope.mode==="full" || projected!==null);
-  let closure = modular ? moduleImpact(resolved,scope,initial,projected,deadline) : traverse();
+  let closure = modular ? yield* moduleImpact(resolved,scope,initial,projected,deadline) : traverse();
   if(checkpoint) checkpoint({target,...closure,partial:true,relatedTests:closure.affectedFiles.filter(isTestFile),affectedPatterns:[]});
   while (!modular && scope.mode === "jit" && performance.now()<deadline) {
     const terms:string[]=[];

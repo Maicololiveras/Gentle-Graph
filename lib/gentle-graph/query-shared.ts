@@ -1,4 +1,4 @@
-import {moduleProjection,projectionArgs,projectionPattern} from "./impact-modules.ts";
+import {moduleProjection,projectionArgs,projectionPattern,ModuleReadBatch,readModuleBatch,readModuleBatchSync} from "./impact-modules.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type { GraphIndex, CodeSymbol } from "./types.ts";
@@ -60,12 +60,13 @@ export function searchFrontier(root: string, scope: ReturnType<typeof syncGraphI
 }
 
 
-export type QuerySteps<T> = Generator<string[]|typeof moduleProjection,T,string[]|null>;
+export type QuerySteps<T> = Generator<string[]|typeof moduleProjection|ModuleReadBatch,T,string[]|null>;
 export function runSync<T>(root:string, steps:QuerySteps<T>,deadline=Infinity):T {
   let step=steps.next();
   while(!step.done){
     const remaining=Math.min(4000,Math.ceil(deadline-performance.now()));
-    const rows=remaining<=0?null:step.value===moduleProjection
+    const rows=remaining<=0?null:step.value instanceof ModuleReadBatch
+      ?readModuleBatchSync(root,step.value.files,deadline):step.value===moduleProjection
       ?gitPathsSync(root,projectionArgs,true,projectionPattern,remaining)
       :gitGrepFilesSync(root,step.value as string[],Infinity,remaining);
     step=steps.next(rows);
@@ -94,6 +95,8 @@ export async function runAsync<T>(
     const remaining = deadline - performance.now();
     if (remaining <= 0) {
       step = steps.next(null);
+    } else if (step.value instanceof ModuleReadBatch) {
+      step = steps.next(await readModuleBatch(root,step.value.files,deadline));
     } else if (step.value === moduleProjection) {
       const result = prefetched && (await prefetched)[0];
       if (result?.status === "rejected") throw result.reason;

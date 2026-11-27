@@ -51,7 +51,39 @@ function edgesOf(file:string,text:string,paths:Set<string>) {
 }
 
 type Scope=ReturnType<typeof syncGraphIndex>;
-export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:string[]|null,deadline:number){
+export class ModuleReadBatch {
+  readonly files: string[];
+  constructor(files: string[]) { this.files=files; }
+}
+
+const fileLimit = 256 * 1024;
+export function readModuleBatchSync(root:string, files:string[], deadline:number):string[]{
+  return files.map(file=>{
+    if(performance.now()>=deadline)return "";
+    try{
+      const abs=path.join(root,file),stat=fs.lstatSync(abs);
+      return stat.isFile() && stat.size<=fileLimit ? fs.readFileSync(abs,"utf8") : "";
+    }catch{return "";}
+  });
+}
+
+export async function readModuleBatch(root:string, files:string[], deadline:number):Promise<string[]>{
+  const output=new Array<string>(files.length).fill("");
+  let cursor=0;
+  async function readLane(){
+    while(cursor<files.length && performance.now()<deadline){
+      const i=cursor++,abs=path.join(root,files[i]);
+      try{
+        const stat=await fs.promises.lstat(abs);
+        if(stat.isFile() && stat.size<=fileLimit)output[i]=await fs.promises.readFile(abs,"utf8");
+      }catch{ /* The working tree can change after Git's projection. */ }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(16,files.length)}, readLane));
+  return output;
+}
+
+export function* moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:string[]|null,deadline:number){
   const candidates=new Map<string,Set<string>>();
   let file=rows?.[0];
   // With -z -o, Git emits path NUL match LF repeatedly. Keep embedded newlines in paths.
@@ -86,26 +118,37 @@ export function moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:str
   const inbound=new Map<string,Edge[]>();
   const seen=new Set<string>();
   const textByFile=new Map<string,string>();
-  for(const dependency of reachable){
-    if(performance.now()>=deadline)break;
-    for(const file of candidates.get(dependency)??[]){
-      if(seen.has(file))continue;
-      seen.add(file);
-      let text:string;
-      try{
-        const abs=path.join(root,file),stat=fs.lstatSync(abs);
-        if(!stat.isFile() || stat.size>256*1024)continue;
-        text=fs.readFileSync(abs,"utf8");
-      }catch{continue;}
+  let frontier=[...origins];
+  while(frontier.length && performance.now()<deadline){
+    const files:string[]=[];
+    for(const dependency of frontier){
+      for(const candidate of candidates.get(dependency)??[]){
+        if(seen.has(candidate))continue;
+        seen.add(candidate);
+        files.push(candidate);
+      }
+    }
+    const texts:string[]|null=files.length ? yield new ModuleReadBatch(files) : [];
+    if(!texts)break;
+    for(const [i,file] of files.entries()){
+      const text=texts[i];
+      if(!text)continue;
+      textByFile.set(file,text);
       for(const edge of edgesOf(file,text,scope.paths)){
         let edges=inbound.get(edge.dependency);
         if(!edges)inbound.set(edge.dependency,edges=[]);
         edges.push(edge);
-        if(reachable.has(edge.dependency))reachable.add(file);
       }
-      textByFile.set(file,text);
     }
-    for(const edge of inbound.get(dependency)??[])reachable.add(edge.file);
+    const next:string[]=[];
+    for(const dependency of frontier){
+      for(const edge of inbound.get(dependency)??[]){
+        if(reachable.has(edge.file))continue;
+        reachable.add(edge.file);
+        next.push(edge.file);
+      }
+    }
+    frontier=next;
   }
 
   const directCallers:SymbolRef[]=[],transitiveCallers:SymbolRef[]=[];
