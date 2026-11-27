@@ -16,6 +16,27 @@ const grepArgs = ["grep", "--untracked", "-I", "-z", "-l", "-F", "-f", "-", "--"
   ":(exclude,glob)**/.gentle-graph/**", ":(exclude,glob)**/node_modules/**"];
 const layoutArgs = ["rev-parse", "--path-format=absolute", "--absolute-git-dir", "--git-common-dir", "--show-prefix"];
 
+// Git for Windows exposes cmd/git.exe as a launcher. Use the sibling native
+// executable only when the first git.exe on PATH belongs to that layout.
+let resolvedGit:{searchPath:string;executable:string}|undefined;
+function gitExecutable(){
+  if(process.platform!=="win32")return "git";
+  const searchPath=process.env.PATH??"";
+  if(resolvedGit?.searchPath===searchPath)return resolvedGit.executable;
+  let executable="git";
+  for(const entry of searchPath.split(path.delimiter)){
+    const dir=entry.replace(/^"|"$/g,"");
+    if(!dir || !fs.existsSync(path.join(dir,"git.exe")))continue;
+    if(path.basename(dir).toLowerCase()==="cmd"){
+      const native=path.resolve(dir,"../mingw64/bin/git.exe");
+      if(fs.existsSync(native))executable=native;
+    }
+    break;
+  }
+  resolvedGit={searchPath,executable};
+  return executable;
+}
+
 type Inventory = { files:string[]; untracked:string[]; dirty?:string[] };
 type GitFailure = { code?:string|number; status?:number; killed?:boolean; stderr?:string|Buffer };
 export class GitScopeError extends Error {
@@ -29,7 +50,13 @@ export class GitScopeError extends Error {
 const layouts = new Map<string,GitLayout>();
 function gitFailure(root:string, args:string[], failure:GitFailure):null|string {
   if(args[0]==="grep" && (failure.status===1 || failure.code===1))return "";
-  if(failure.code==="ENOENT")return null;
+  if(failure.code==="ENOENT"){
+    let dir=path.resolve(root);
+    while(!fs.existsSync(path.join(dir,".git"))){
+      const parent=path.dirname(dir);if(parent===dir)return null;dir=parent;
+    }
+    throw new GitScopeError(args[0],false);
+  }
   // Keep the no-Git fallback explicit. A timeout, lock or corrupt index is
   // never permission to enumerate a potentially huge checkout on foot.
   if(failure.stderr?.toString().includes("not a git repository"))return null;
@@ -38,7 +65,7 @@ function gitFailure(root:string, args:string[], failure:GitFailure):null|string 
 
 function gitTextSync(root:string,args:string[],input?:string,timeout=4000):string|null {
   try {
-    return execFileSync("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,
+    return execFileSync(gitExecutable(),args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,
       maxBuffer:MAX_OUTPUT,input,stdio:[input===undefined?"ignore":"pipe","pipe","pipe"],env:gitEnv()});
   } catch(error) {return gitFailure(root,args,error);}
 }
@@ -48,12 +75,27 @@ export function gitPathsSync(root:string,args:string[],_grep=false,input?:string
 }
 
 // Consistent diagnostic for gitFailure on localized hosts.
-function gitEnv(){return {...process.env,LC_ALL:"C"};}
+function gitEnv(){return {...process.env,LC_ALL:"C",GIT_OPTIONAL_LOCKS:"0"};}
 
-export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
+type GitResult={status:"ok"|"not_git"|"git_error";paths:string[];error?:GitScopeError};
+export async function gitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<GitResult>{
+  try{
+    const paths=await executeGitPaths(root,args,input,timeout);
+    return paths===null?{status:"not_git",paths:[]}:{status:"ok",paths};
+  }catch(error){
+    if(!(error instanceof GitScopeError))throw error;
+    return {status:"git_error",paths:[],error};
+  }
+}
+export async function requireGitPaths(root:string,args:string[],input?:string,timeout=4000){
+  const result=await gitPaths(root,args,input,timeout);
+  if(result.status==="git_error")throw result.error;
+  return result.status==="ok"?result.paths:null;
+}
+async function executeGitPaths(root:string,args:string[],input?:string,timeout=4000):Promise<string[]|null>{
   const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
   try {
-    const result=run("git",args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
+    const result=run(gitExecutable(),args,{cwd:root,encoding:"utf8",windowsHide:true,timeout,maxBuffer:MAX_OUTPUT,env:gitEnv()});
     result.child.stdin?.on("error",()=>{}).end(input);
     return (await result).stdout.split("\0").filter(Boolean);
   } catch(error){
@@ -94,9 +136,9 @@ export function gitWorkspaceInventory(root: string): Inventory | null {
     offsets.push(offset);
   } : undefined);
   if (!tracked) return gitInventory(root);
-  const folders = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
-  if (folders && layout) {
-    const remaining = gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",".", ...[...folders].map(f=>":(exclude,literal)"+f)]);
+  const unchecked = layout && bytes && before && verifiedRacyFolders(root, layout, tracked, offsets, bytes);
+  if (unchecked && layout) {
+    const remaining = unchecked.length ? gitPathsSync(root, ["diff-files","--name-only","--no-renames","-z","--",...unchecked]) : [];
 
     const untracked = gitPathsSync(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]);
     const staged = gitPathsSync(root, ["diff", "--cached", "--name-only", "--no-renames", "-z", "--", "."]);
@@ -136,6 +178,43 @@ export function gitGrepFilesSync(root:string,literal:string|string[],maxFiles=80
   if(!terms.length)return [];
   const rows=gitTextSync(root,grepArgs,terms.join("\n")+"\n",timeout);
   return rows?.split("\0").filter(isIndexableFile).slice(0,maxFiles)??null;
+}
+
+// Read the worktree once for both the target and the reverse-import projection.
+export async function grepImpactProjection(root:string, term:string, staged=false){
+  if(!/^[a-z][a-zA-Z0-9_]*$/.test(term))return null;
+  const args=[...projectionArgs.slice(0,projectionArgs.indexOf("--")+1),...grepArgs.slice(grepArgs.indexOf("--")+1)];
+  if(staged)args[args.indexOf("--untracked")]="--cached";
+  const rows=await requireGitPaths(root,args,projectionPattern+term+"\n");
+  if(!rows)return null;
+  const hits=new Set<string>();
+  const projection:string[]=[];
+  let file=rows[0];
+  for(const row of rows.slice(1)){
+    const newline=row.indexOf("\n");
+    if(newline<0) return null;
+    const match=row.slice(0,newline).replace(/\r$/,"");
+    if(match.includes(term) && isIndexableFile(file))hits.add(file);
+    if((match[0]==="'" || match[0]==='"') && /\.(?:[cm]?[jt]s|[jt]sx|svelte)$/.test(file)){
+      if(!projection.length)projection.push(file);
+      else projection[projection.length-1]+=file;
+      projection.push(match+"\n");
+    }
+    file=row.slice(newline+1);
+  }
+  return {hits:[...hits],projection};
+}
+
+// A clean index and worktree agree for these literal searches through CRLF
+// conversion. Smudge filters, ident expansion and alternate encodings may
+// change the searchable text even when Git reports a clean file.
+export async function plainCheckoutText(root:string,files:string[]){
+  const rows=await requireGitPaths(root,["check-attr","-z","--all","--stdin"],files.join("\0")+"\0");
+  if(rows===null)return false;
+  for(let i=1;i<rows.length;i+=3){
+    if(["filter","ident","working-tree-encoding"].includes(rows[i]))return false;
+  }
+  return true;
 }
 
 export interface GitSnapshot {
@@ -183,6 +262,25 @@ async function metadata(files:string[]):Promise<string>{
   return hash.digest("hex");
 }
 
+async function snapshotFromChanges(root:string,layout:GitLayout,files:string[],untracked:string[],staged:string[],changedOnDisk:string[]):Promise<[GitSnapshot,Inventory]|undefined>{
+  const markers=controlFiles(root,layout);
+  const head=fs.readFileSync(markers[0],"utf8").trimEnd();
+  let oid=head;
+  if(head.startsWith("ref: ")){
+    try{oid=fs.readFileSync(markers.at(-1),"utf8").trimEnd();}catch{oid="";}
+  }
+  if(/^[0-9a-f]{40}$/.test(oid)){
+    const changed=[...new Set([...untracked,...staged,...changedOnDisk])].filter(f=>!f.startsWith(".gentle-graph/") || f===".gentle-graph/guide.json");
+    markers.push(...changed.map(f=>path.join(root,f)));
+    const stamp=await metadata(markers);
+    const key=createHash("sha256").update(oid).update(JSON.stringify(changed)).update(stamp).digest("hex");
+    const inventory={files:[...files,...untracked],untracked};
+    const state:GitSnapshot={root,key,dirty:changed.filter(isIndexableFile),inventory,greps:new Map(),results:new Map(),checkedAt:Date.now(),markers,stamp};
+    layouts.set(root,layout);
+    return [state,inventory];
+  }
+}
+
 export async function prepareColdScope(root:string, inspectTerm?:string, impact=false):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
@@ -191,21 +289,49 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
   if(layout && process.platform==="win32"){
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
+      const inventorySnapshot = async ():Promise<[GitSnapshot,Inventory]|undefined> => {
+        // Independent Git plumbing reads can overlap the NTFS directory scan
+        // with tracked-file verification. Preserve staged and unstaged paths
+        // separately, including a staged edit undone only in the worktree.
+        const [untracked,staged,changed]=await Promise.all([
+          requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+          requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."]),
+          requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--","."])
+        ]);
+        if(untracked && staged && changed){
+          const prepared=await snapshotFromChanges(root,layout,tracked,untracked,staged,changed);
+          if(prepared)return prepared;
+        }
+      };
+      if(!inspectTerm && !impact){
+        const prepared=await inventorySnapshot();
+        if(prepared)return prepared;
+      }
       // A single unqualified lowercase-initial name is the first literal of
       // inspect. Overlap its read-only search with status on large worktrees.
       // Dirty snapshots use the normal search after status has settled.
       const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
+      const projectImports=impact && fs.existsSync(path.join(root,"tsconfig.json"));
+      const useObjects=projectImports && simple && /^[a-z][a-zA-Z0-9_]*$/.test(inspectTerm!);
+      // Search packed objects while Git validates worktree status. This
+      // avoids two processes opening the same thousands of NTFS files.
+      const combined=useObjects ? Promise.all([
+        grepImpactProjection(root,inspectTerm!,true),
+        plainCheckoutText(root,tracked)
+      ]).then(([result,plain])=>plain?result:null).catch(()=>null) : undefined;
+      // status reports staged, unstaged and untracked changes together. With
+      // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
         gitSnapshot(root),
-        simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null,
-        impact && fs.existsSync(path.join(root,"tsconfig.json")) ? gitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
+        combined ? combined.then(result=>result?.hits) : simple ? gitGrepFiles(root,inspectTerm!,Infinity,null).catch(()=>null) : null,
+        combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
       if (simple && state && !state.dirty.length && hits) {
         state.greps.set(JSON.stringify([inspectTerm]), hits);
       }
       if(state){
-        const untracked=state.untracked??[];
+        const untracked=state.inventory?.untracked??state.untracked??[];
         const inventory={files:[...tracked,...untracked],untracked};
         state.inventory=inventory;
         return [state,inventory];
@@ -217,29 +343,15 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
     // establishes clean tracked bytes. Git supplies staged and untracked changes.
     const [verified,untracked,staged]=await Promise.all([
       verifiedCleanIndex(root,layout),
-      gitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
-      gitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
+      requireGitPaths(root,["ls-files","--others","--exclude-standard","-z","--","."]),
+      requireGitPaths(root,["diff","--cached","--name-only","--no-renames","-z","--","."])
     ]);
     if(verified && untracked && staged){
       const {files,suspects}=verified;
-      const changedOnDisk=suspects.length ? await gitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
+      const changedOnDisk=suspects.length ? await requireGitPaths(root,["diff-files","--name-only","--no-renames","-z","--",...suspects.map(f=>":(literal)"+f)]) : [];
       if(changedOnDisk===null)return [null,null];
-      const markers=controlFiles(root,layout);
-      const head=fs.readFileSync(markers[0],"utf8").trimEnd();
-      let oid=head;
-      if(head.startsWith("ref: ")){
-        try{oid=fs.readFileSync(markers.at(-1),"utf8").trimEnd();}catch{oid="";}
-      }
-      if(/^[0-9a-f]{40}$/.test(oid)){
-        const changed=[...new Set([...untracked,...staged,...changedOnDisk])].filter(f=>!f.startsWith(".gentle-graph/") || f===".gentle-graph/guide.json");
-        markers.push(...changed.map(f=>path.join(root,f)));
-        const stamp=await metadata(markers);
-        const key=createHash("sha256").update(oid).update(JSON.stringify(changed)).update(stamp).digest("hex");
-        const inventory={files:[...files,...untracked],untracked};
-        const state:GitSnapshot={root,key,dirty:changed.filter(isIndexableFile),inventory,greps:new Map(),results:new Map(),checkedAt:Date.now(),markers,stamp};
-        layouts.set(root,layout);
-        return [state,inventory];
-      }
+      const prepared=await snapshotFromChanges(root,layout,files,untracked,staged,changedOnDisk);
+      if(prepared)return prepared;
     }
   }
   return Promise.all([gitSnapshot(root),gitSessionInventory(root,null)]);
@@ -252,8 +364,8 @@ export async function gitSnapshot(projectRoot:string):Promise<GitSnapshot|null>{
   // dirty file, branch/index change or manual guide edit invalidates immediately.
   if(old && Date.now()-old.checkedAt<GIT_TTL_MS && await metadata(old.markers)===old.stamp)return old;
   const [rows,layout]=await Promise.all([
-    gitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
-    layouts.get(root)??gitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))
+    requireGitPaths(root,["status","--branch","--no-ahead-behind","--porcelain=v2","-z","--no-renames","--untracked-files=all","--","."]),
+    layouts.get(root)??requireGitPaths(root,layoutArgs).then(r=>rememberLayout(root,r?.join("")??null))
   ]);
   if(!rows || !layout)return null;
   const markers=controlFiles(root,layout);
@@ -287,7 +399,7 @@ export async function gitListIndexableFiles(root:string,state?:GitSnapshot|null)
 }
 export async function gitSessionInventory(root:string,snapshot:GitSnapshot|null):Promise<Inventory|null>{
   if(snapshot?.inventory)return snapshot.inventory;
-  const files=await gitPaths(root,["ls-files","--deduplicate","-z","--cached","--others","--exclude-standard","--","."]);
+  const files=await requireGitPaths(root,["ls-files","--deduplicate","-z","--cached","--others","--exclude-standard","--","."]);
   if(!files)return null;
   const inventory={files,untracked:[]};
   if(snapshot)snapshot.inventory=inventory;
@@ -302,7 +414,7 @@ export async function gitGrepFiles(root:string,literal:string|string[],maxFiles=
   const key=JSON.stringify(terms);
   let files=snapshot?.greps.get(key);
   if(!files){
-    const rows=await gitPaths(root,grepArgs,terms.join("\n")+"\n",timeout);
+    const rows=await requireGitPaths(root,grepArgs,terms.join("\n")+"\n",timeout);
     if(rows===null)return null;
     files=rows.filter(isIndexableFile);
     if(snapshot){

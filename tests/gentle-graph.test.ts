@@ -318,7 +318,7 @@ it("reopens a large WAL index, updates and removes individual entries", async ()
 });
 
 it("JIT literal search includes untracked source files and ignores graph artifacts", async () => {
-  const { gitGrepFiles } = await import("../lib/gentle-graph/git-scope.ts");
+  const { gitGrepFiles, grepImpactProjection, gitPathsSync, plainCheckoutText } = await import("../lib/gentle-graph/git-scope.ts");
   const { execFileSync } = await import("node:child_process");
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),"graph-grep-"));
   try {
@@ -330,6 +330,16 @@ it("JIT literal search includes untracked source files and ignores graph artifac
     fs.writeFileSync(path.join(dir,"note.md"),"alpha");
     fs.writeFileSync(path.join(dir,".gentle-graph","generated.ts"),"alpha");
     assert.deepEqual((await gitGrepFiles(dir,["alpha","-port[5]"],Infinity))?.sort(),["client.py","src/query.TS"]);
+    fs.writeFileSync(path.join(dir,"src","entry.ts"),"import './alpha';\r\nimport './other';\r\nalpha();");
+    const combined=await grepImpactProjection(dir,"alpha");
+    const {projectionArgs,projectionPattern}=await import("../lib/gentle-graph/git-projection.ts");
+    assert.deepEqual(combined?.hits.sort(),["client.py","src/entry.ts"]);
+    assert.deepEqual(combined?.projection,gitPathsSync(dir,projectionArgs,true,projectionPattern));
+    execFileSync("git",["add","src","client.py"],{cwd:dir});
+    assert.deepEqual(await grepImpactProjection(dir,"alpha",true),combined);
+    assert.equal(await plainCheckoutText(dir,["src/entry.ts","client.py"]),true);
+    fs.writeFileSync(path.join(dir,".gitattributes"),"*.ts filter=custom-text\n");
+    assert.equal(await plainCheckoutText(dir,["src/entry.ts","client.py"]),false);
   } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
@@ -421,9 +431,10 @@ it("reports a broken Git index and recovers on the next session query", {timeout
   const indexPath = path.join(root, ".git", "index");
   const original = fs.readFileSync(indexPath);
   fs.writeFileSync(indexPath, "broken Git index");
-  assert.throws(() => graphGuide("billing", {projectRoot: root}), /Git ls-files failed/);
+  assert.equal(syncGraphIndex(root).degraded,true);
+  assert.deepEqual(graphGuide("billing",{projectRoot:root}).recommendedModules,[]);
   try {
-    await assert.rejects(sessionQuery({root,kind:"guide",term:"billing"}), /Git .* failed/);
+    assert.doesNotMatch(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
     assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
     fs.writeFileSync(indexPath, original);
     assert.match(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
@@ -510,3 +521,4 @@ it("keeps Go package-private transitive callers inside their package", t=>{
   assert.ok(!result.transitiveCallers.some(s=>s.name==="Detached"));
   assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });
+import "./sqlite-store.test.ts";

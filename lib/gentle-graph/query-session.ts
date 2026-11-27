@@ -2,7 +2,7 @@ import path from "node:path";
 import {existsSync} from "node:fs";
 import { MessageChannel, Worker } from "node:worker_threads";
 
-import {prepareColdScope,clearGitSession} from "./git-scope.ts";
+import {prepareColdScope,clearGitSession,GitScopeError} from "./git-scope.ts";
 
 export interface Query {
   kind: "guide" | "inspect" | "impact";
@@ -101,7 +101,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     worker.once("error", error);
     async function send() {
       // Run the first Git commands while Node loads the language adapters in the worker.
-      const prepared = cold ? await prepareColdScope(query.root, query.kind === "inspect" ? query.term : undefined, query.kind === "impact") : undefined;
+      const prepared = cold ? await prepareColdScope(query.root, query.kind !== "guide" ? query.term : undefined, query.kind === "impact") : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
     }
@@ -109,6 +109,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
       // Git preparation may fail while the new worker is still booting. Keep
       // the healthy worker in its lane for a retry or normal session shutdown.
       if (lane.worker === worker) {
+        if(err instanceof GitScopeError){worker.postMessage({query,degraded:true});return;}
         finish();
         reject(err);
       }

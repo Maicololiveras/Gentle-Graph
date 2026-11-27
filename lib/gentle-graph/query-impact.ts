@@ -1,8 +1,9 @@
 import {moduleImpact,moduleProjection,jsModule,possibleModuleDefinitions} from "./impact-modules.ts";
+import {GitScopeError} from "./git-scope.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile } from "./languages/registry.ts";
-import { indexSpecificFiles,syncGraphIndex } from "./indexer.ts";
+import { indexSpecificFiles,syncGraphIndex,cachedScope } from "./indexer.ts";
 import fs from "node:fs";
 import {bindingMatches,searchFrontier,runSync,type QuerySteps} from "./query-shared.ts";
 import type {CodeSymbol,ImpactResult,SymbolRef} from "./types.ts";
@@ -13,22 +14,23 @@ import type {CodeSymbol,ImpactResult,SymbolRef} from "./types.ts";
 export function graphImpact(target:string, options:{projectRoot?: string; budgetMs?:number}={}):ImpactResult {
   const root=path.resolve(options.projectRoot??process.cwd());
   const deadline=performance.now()+Math.min(1500,Math.max(0,options.budgetMs??1500));
-  return runSync(root,impactSteps(target,options,root,syncGraphIndex(root),deadline),deadline);
+  try{return runSync(root,impactSteps(target,options,root,syncGraphIndex(root),deadline),deadline);}
+  catch(error){if(!(error instanceof GitScopeError))throw error;return runSync(root,impactSteps(target,options,root,cachedScope(root),deadline),deadline);}
 }
 export function* impactSteps(target:string, options:{projectRoot?: string; budgetMs?:number},resolved:string,scope:ReturnType<typeof syncGraphIndex>, deadline:number,checkpoint?:(partial:ImpactResult)=>void):QuerySteps<ImpactResult> {
   const { index } = scope;
   const search = searchFrontier(resolved, scope,deadline);
   const isFile = scope.paths.has(target);
-  if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { paths: scope.paths, followImports: 1 });
+  if (scope.mode === "jit" && isFile) indexSpecificFiles(resolved, [target], { index:scope.index, paths: scope.paths, followImports: 1 });
   const owner=target.includes("#")?target.slice(0,target.lastIndexOf("#")):undefined;
   const term=target.split("#").at(-1)??target;
   let initialHits:string[]|null=null;
   if(scope.mode==="jit" && !isFile){
     if(owner && scope.paths.has(owner)){
-      indexSpecificFiles(resolved,[owner],{paths:scope.paths,deadline});
+      indexSpecificFiles(resolved,[owner],{index:scope.index,paths:scope.paths,deadline});
     } else {
       initialHits=yield [term];
-      if(initialHits)indexSpecificFiles(resolved,possibleModuleDefinitions(resolved,initialHits,term),{paths:scope.paths,deadline});
+      if(initialHits)indexSpecificFiles(resolved,possibleModuleDefinitions(resolved,initialHits,term),{index:scope.index,paths:scope.paths,deadline});
     }
   }
   function identifyRoots(){
@@ -164,7 +166,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
         if(index.files[ref.file].symbols.some(s=>s.name===owner && /\bpartial\b/.test(s.signature)))terms.push(owner);
       } else terms.push(ref.name);
     }
-    if(localFiles.size)indexSpecificFiles(resolved,localFiles,{paths:scope.paths,deadline});
+    if(localFiles.size)indexSpecificFiles(resolved,localFiles,{index:scope.index,paths:scope.paths,deadline});
     terms.push(...closure.contracts);
     const paths: string[] = [];
     for (const file of [...closure.origins, ...closure.affectedFiles]) {
@@ -195,7 +197,7 @@ export function* impactSteps(target:string, options:{projectRoot?: string; budge
 
   return {
     target,
-    ...(performance.now()>=deadline?{partial:true}:{}),
+    ...(scope.degraded || performance.now()>=deadline?{partial:true}:{}),
     directCallers,
     transitiveCallers,
     affectedFiles,

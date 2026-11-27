@@ -1,7 +1,8 @@
+import {GitScopeError} from "./git-scope.ts";
 import path from "node:path";
 import { getLookup,loadArchGuide,symbolNames } from "./store.ts";
 import { isTestFile,resolveImport } from "./languages/registry.ts";
-import { indexSpecificFiles,syncGraphIndex } from "./indexer.ts";
+import { indexSpecificFiles,syncGraphIndex,cachedScope } from "./indexer.ts";
 import {bindingMatches,readBoundedSnippet,searchFrontier,runSync,type QuerySteps} from "./query-shared.ts";
 import type {CodeSymbol,InspectResult,SymbolRef} from "./types.ts";
 /**
@@ -10,7 +11,8 @@ import type {CodeSymbol,InspectResult,SymbolRef} from "./types.ts";
  */
 export function graphInspect(symbolQuery:string, options:{projectRoot?: string; depth?: number; maxMatches?: number}={}):InspectResult[] {
   const root=path.resolve(options.projectRoot??process.cwd());
-  return runSync(root,inspectSteps(symbolQuery,options,root,syncGraphIndex(root)));
+  try{return runSync(root,inspectSteps(symbolQuery,options,root,syncGraphIndex(root)));}
+  catch(error){if(!(error instanceof GitScopeError))throw error;return runSync(root,inspectSteps(symbolQuery,options,root,cachedScope(root)));}
 }
 export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string; depth?: number; maxMatches?: number},resolved:string,scope:ReturnType<typeof syncGraphIndex>):QuerySteps<InspectResult[]> {
   const maxDepth = Math.max(1, Math.min(3, options.depth ?? 1));
@@ -21,13 +23,13 @@ export function* inspectSteps(symbolQuery:string, options:{projectRoot?: string;
   yield* search([name]);
   if (scope.mode === "jit" && !getLookup(index).symbolByName.has(name)) {
     // Partial and case-insensitive matches may occur in the path alone.
-    indexSpecificFiles(resolved, scope.knownFiles, { paths: scope.paths });
+    indexSpecificFiles(resolved, scope.knownFiles, { index:scope.index, paths: scope.paths });
   }
   // A receiver may be a local instance of a directly imported class.
   if(scope.mode==="jit"){
     const roots=getLookup(index).symbolByName.get(name)??[];
     for(const file of new Set(roots.map(s=>s.file))){
-      if(/\.[cm]?[jt]sx?$/.test(file))indexSpecificFiles(resolved,[file],{paths:scope.paths,followImports:1});
+      if(/\.[cm]?[jt]sx?$/.test(file))indexSpecificFiles(resolved,[file],{index:scope.index,paths:scope.paths,followImports:1});
     }
   }
   let frontierNames = new Set([name]);

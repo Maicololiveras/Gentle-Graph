@@ -3,7 +3,8 @@ import path from "node:path";
 import {typescript,workspaceCompiler} from "./languages/typescript.ts";
 import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
-import {syncGraphIndex} from "./indexer.ts";
+import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
+import {syncGraphIndex,cachedScope} from "./indexer.ts";
 import {guideFromScope} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
 import {impactSteps} from "./query-impact.ts";
@@ -38,19 +39,23 @@ if (initial.compiler) {
   if (profile) compilerEnd = performance.now();
 }
 
+const profileCache={};
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
-async function handle(q:Query,prepared?:Prepared){
+async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
-  const state=prepared ? prepared[0] : await gitSnapshot(q.root);
+  let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
   if(prepared && state){state.inventory=prepared[1]??undefined;adoptGitSnapshot(state); }
   const key=JSON.stringify(q);
-  const cached=state?.results.get(key);
+  const cacheKey=key+indexStamp(q.root);
+  const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
-  const inventory=prepared ? prepared[1] : await gitSessionInventory(q.root,state);
-  const scope=syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
-  let text:string;
+  const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
+  let text:string,partial=false;
+  beginGraphWrites(q.root);
+  try {
+  const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
   if(q.kind==="guide"){
-    text=formatGuide(guideFromScope(q.term,q,q.root,scope));
+    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache));
   } else if(q.kind==="inspect"){
     text=formatInspect(await runAsync(q.root,inspectSteps(q.term,q,q.root,scope),state));
   } else {
@@ -58,18 +63,26 @@ async function handle(q:Query,prepared?:Prepared){
     const result=await runAsync(q.root,impactSteps(q.term,{},q.root,scope,deadline,partial=>
       parentPort.postMessage({checkpoint:formatImpact(partial)})),state,deadline,prefetch);
     text=formatImpact(result);
-    if(result.partial)return text;
+    partial=!!result.partial;
   }
-  if(state){
+  } finally {
+    try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+  }
+  if(state && !partial && !degraded){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
-    state.results.set(key,text);
+    state.results.set(key+indexStamp(q.root),text);
   }
   return text;
 }
-parentPort.on("message",async({query,prepared,inventoryReady}:{query:Query;prepared?:Prepared;inventoryReady?:number})=>{
+parentPort.on("message",async({query,prepared,inventoryReady,degraded}:{query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   try {
     const received = profile ? performance.now() : 0;
-    const text = await handle(query,prepared);
+    let text:string;
+    try{text=await handle(query,prepared,degraded);}
+    catch(error){
+      if(!(error instanceof GitScopeError) || degraded)throw error;
+      text=await handle(query,undefined,true);
+    }
     if(profile && prepared && inventoryReady !== undefined) {
       const start = initial.profileStart!;
       console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,compilerEnd,received,end:performance.now()}));

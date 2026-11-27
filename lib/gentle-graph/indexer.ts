@@ -1,11 +1,12 @@
+import {existingBackend} from "./sqlite-backend.ts";
 import { isManifest } from "./arch-detector.ts";
-import { gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
+import { GitScopeError,gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
 import {workerData} from "node:worker_threads";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { adapterFor, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
-import { invalidateLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
+import { patchLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
 import type { ArchGuideStore, GraphIndex, SyncStats } from "./types.ts";
 
 export const SYNC_TTL_MS = 2000;
@@ -44,9 +45,7 @@ function walkSourceFiles(root: string, current: string, acc: string[]): void {
     if (!entry.isFile()) continue;
     const full = path.join(current, entry.name);
     const rel = path.relative(root, full).split(path.sep).join("/");
-    if ((isIndexableFile(rel) || isManifest(rel) || isContract(rel)) && !/\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(rel)) {
-      acc.push(rel);
-    }
+    acc.push(rel);
   }
 }
 
@@ -154,8 +153,8 @@ function currentJitScope(root: string, index: GraphIndex, cached: CachedScope): 
     const stat = fs.statSync(path.join(root, folder), {throwIfNoEntry:false});
     if (!stat || stat.mtimeMs >= cached.discoveredAt) return false;
   }
-  for (const file of Object.values(index.files)) {
-    if (fs.lstatSync(path.join(root,file.path), {throwIfNoEntry:false})?.mtimeMs !== file.mtimeMs) return false;
+  for (const file of Object.keys(index.files)) {
+    if (fs.lstatSync(path.join(root,file), {throwIfNoEntry:false})?.mtimeMs !== (existingBackend()?.storedMtime(index,file) ?? index.files[file].mtimeMs)) return false;
   }
   return true;
 }
@@ -173,9 +172,9 @@ function likelyMinified(content: string): boolean {
   return false;
 }
 
-export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
+export function indexSpecificFiles(projectRoot: string, files: Iterable<string>, options: { index?:GraphIndex; followImports?: number; paths?: Set<string>; preview?: boolean; fullParseFiles?: Set<string>; deferSave?: Set<string>; deadline?:number } = {}) {
   const root = path.resolve(projectRoot);
-  const index = loadGraphIndex(root);
+  const index = options.index ?? loadGraphIndex(root);
   const paths = options.paths ?? new Set(listWorkspaceFiles(root).knownFiles);
   const stats: SyncStats = { scanned: 0, updated: 0, removed: 0, durationMs: 0, stalePatterns: 0 };
   const start = performance.now();
@@ -229,7 +228,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
     }
     frontier = next;
   }
-  if (stats.updated || stats.removed) invalidateLookup(index);
+  if (stats.updated || stats.removed) patchLookup(index,changed);
   if (options.deferSave) {
     for (const file of changed) options.deferSave.add(file);
   } else if (changed.size) {
@@ -241,7 +240,7 @@ export function indexSpecificFiles(projectRoot: string, files: Iterable<string>,
   return { index, stats };
 }
 
-export function syncGraphIndex(projectRoot: string, options: boolean | { fullSync?: boolean; inventory?: ReturnType<typeof gitInventory>; dirty?: string[]; refresh?: boolean } = {}) {
+function discoverScope(projectRoot: string, options: boolean | { fullSync?: boolean; inventory?: ReturnType<typeof gitInventory>; dirty?: string[]; refresh?: boolean } = {}) {
   const root = path.resolve(projectRoot);
   const index = loadGraphIndex(root);
   const previous = scopes.get(index);
@@ -259,9 +258,28 @@ export function syncGraphIndex(projectRoot: string, options: boolean | { fullSyn
   const scope: Scope = { knownFiles, tests, manifests, contracts, paths: new Set(knownFiles), mode: dirty === null ? "full" : "jit", dirty: dirty ?? [] };
   const guide = loadArchGuide(root);
   const patterns = new Set(guide.patterns.map(p => p.entry.split("#")[0]));
-  const files = [...Object.keys(index.files), ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];
+  const indexed=scope.mode==="full"?Object.keys(index.files).filter(f=>!scope.paths.has(f)):Object.keys(index.files).filter(file=>{
+    const time=existingBackend()?.storedMtime(index,file);
+    return time===undefined || !scope.paths.has(file) || fs.statSync(path.join(root,file),{throwIfNoEntry:false})?.mtimeMs!==time;
+  });
+  const files = [...indexed, ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];
   const { stats } = indexSpecificFiles(root, files, { paths: scope.paths, preview: scope.mode === "jit", fullParseFiles: patterns });
   stats.stalePatterns = reconcilePatternsWithIndex(root, index, guide);
   scopes.set(index, { scope, discoveredAt, folders, time: performance.now(), stalePatterns: stats.stalePatterns });
   return { index, ...scope, stats };
+}
+
+
+export function cachedScope(root:string){
+  const index=loadGraphIndex(root);
+  const knownFiles=Object.keys(index.files);
+  const previous=scopes.get(index)?.scope;
+  const inventory=previous??listWorkspaceFiles(root,{files:knownFiles,untracked:[]});
+  return {index,knownFiles,paths:new Set(knownFiles),dirty:[] as string[],tests:inventory.tests,
+    contracts:inventory.contracts,manifests:inventory.manifests,mode:"full" as const,degraded:true,
+    stats:{scanned:0,updated:0,removed:0,durationMs:0,stalePatterns:0}};
+}
+export function syncGraphIndex(root:string,options?:Parameters<typeof discoverScope>[1]){
+  try{return {...discoverScope(root,options),degraded:false};}
+  catch(error){if(error instanceof GitScopeError)return cachedScope(root);throw error;}
 }

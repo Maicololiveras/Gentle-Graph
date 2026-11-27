@@ -240,7 +240,7 @@ export function* moduleImpact(root:string,scope:Scope,roots:CodeSymbol[],rows:st
         if(!hasInvocation(edge.file,call))continue;
         if(!parsed.has(edge.file)){
           parsed.add(edge.file);
-          indexSpecificFiles(root,[edge.file],{paths:scope.paths,deadline,deferSave:changed});
+          indexSpecificFiles(root,[edge.file],{index:scope.index,paths:scope.paths,deadline,deferSave:changed});
         }
         addCallers(edge.file,new Set([call]),hop+1,!member && !!alias && !edge.namespace,member?undefined:edge.namespace);
       }

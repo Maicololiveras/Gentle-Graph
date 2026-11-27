@@ -23,7 +23,8 @@ function readSmall(root: string, file: string) {
   } catch { return ""; }
 }
 
-export function detectArchitecture(root: string, knownFiles: string[], manifests: string[], signals: string[] = []): ArchitectureProfile {
+export interface ArchitectureCache {fingerprint?:string; profile?:ArchitectureProfile}
+export function detectArchitecture(root: string, knownFiles: string[], manifests: string[], signals: string[] = [], session?:ArchitectureCache): ArchitectureProfile {
   const inventory = knownFiles.join("\n");
   const hash = createHash("sha256").update("gentle-profile-v2\0").update(inventory).update("\0" + signals.join("|"));
   const contents = manifests.map(file => {
@@ -33,7 +34,8 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   });
   const fingerprint = hash.digest("hex");
   const location = ".gentle-graph/profile.json";
-  try {
+  if(session?.fingerprint===fingerprint && session.profile)return session.profile;
+  if(!session)try {
     const cached = JSON.parse(readSmall(root, location));
     if (cached.fingerprint === fingerprint && Array.isArray(cached.profile?.architectures)) return cached.profile;
   } catch { /* First scan or an older profile. */ }
@@ -136,6 +138,9 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   if (has("cmd") && has("internal","pkg")) arch.push("Go standard layout");
   if (has("crates")) arch.push("Rust Workspace");
   profile.architectures = [...new Set(arch)];
+  // A host worker already has one lifetime and root. Keep the derived profile
+  // there, avoiding a second atomic disk write alongside the durable graph.
+  if(session){session.fingerprint=fingerprint;session.profile=profile;return profile;}
   const dest = path.join(root, location);
   const tmp = dest + "." + randomUUID() + ".tmp";
   try {

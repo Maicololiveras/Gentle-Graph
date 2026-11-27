@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { GraphIndex, CodeSymbol } from "./types.ts";
 import {getLookup,symbolNames} from "./store.ts";
-import {gitGrepFiles,gitGrepFilesSync,gitPaths,gitPathsSync,type GitSnapshot} from "./git-scope.ts";
+import {gitGrepFiles,gitGrepFilesSync,requireGitPaths,gitPathsSync,type GitSnapshot} from "./git-scope.ts";
 import {indexSpecificFiles,syncGraphIndex} from "./indexer.ts";
 export function bindingMatches(index: GraphIndex, view: CodeSymbol, target: CodeSymbol) {
   if (!view.file.endsWith(".xaml") || target.kind !== "property") return true;
@@ -53,9 +53,9 @@ export function searchFrontier(root: string, scope: ReturnType<typeof syncGraphI
     const hits = yield pending;
     if(performance.now()>=deadline)return false;
     if (!hits) {
-      indexSpecificFiles(root, scope.knownFiles, { paths: scope.paths, deadline });
+      indexSpecificFiles(root, scope.knownFiles, { index:scope.index, paths: scope.paths, deadline });
       complete = true;
-    } else if (hits.length) indexSpecificFiles(root, hits, { paths: scope.paths, followImports: hits.some(f=>f.endsWith(".xaml"))?1:0,deadline });
+    } else if (hits.length) indexSpecificFiles(root, hits, { index:scope.index, paths: scope.paths, followImports: hits.some(f=>f.endsWith(".xaml"))?1:0,deadline });
     return true;
   };
 }
@@ -83,7 +83,7 @@ export async function runAsync<T>(
     const cached = state && (state.projection ?? projections.get(state));
     if (cached) return cached;
     const remaining = Math.max(1, Math.min(4000, Math.ceil(deadline - performance.now())));
-    const rows = await gitPaths(root, projectionArgs, projectionPattern, remaining);
+    const rows = await requireGitPaths(root, projectionArgs, projectionPattern, remaining);
     if (state && rows) projections.set(state, rows);
     return rows;
   }

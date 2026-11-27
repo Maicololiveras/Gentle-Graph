@@ -79,43 +79,57 @@ export function verifiedRacyFolders(root:string, layout:GitLayout, files:string[
   const snapshot = fs.statSync(index,{bigint:true,throwIfNoEntry:false});
   if (!snapshot) return false;
   const second = Number(snapshot.mtimeNs / 1000000000n);
-  // Ordinary checkouts are faster in Git. Sample across the index before
-  // selecting the precise-stat path for widespread timestamp collisions.
-  let ties = 0;
-  for (let i=0; i<32; i++) {
-    const offset = offsets[Math.floor(i*offsets.length/32)];
-    if (bytes.readUInt32BE(offset+8) === second) ties++;
-  }
-  if (ties < 4) return false;
-  // Verify only directories with timestamp ties. Git can cheaply examine the
-  // remaining directories without opening the contents of the tied entries.
-  const group = (file:string) => {
+  // Group adjacent entries once. Only folders with an actual timestamp tie
+  // need exact stats. A sampled cutoff missed small but expensive racy sets.
+  const folders=new Set<string>();
+  const remaining=new Set<string>();
+  const groups:{name:string;start:number;end:number;racy:boolean}[]=[];
+  let group:typeof groups[number]|undefined;
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
     const slash=file.indexOf("/");
-    return slash < 0 ? file : file.slice(0,slash);
-  };
-  const folders = new Set<string>();
-  for (let i=0; i<files.length; i++) {
-    if (bytes.readUInt32BE(offsets[i]+8)>=second) folders.add(group(files[i]));
+    const length=slash<0?file.length:slash;
+    if(!group || group.name.length!==length || !file.startsWith(group.name)){
+      group={name:file.slice(0,length),start:i,end:i,racy:false};
+      groups.push(group);
+    }
+    group.end=i+1;
+    if(bytes.readUInt32BE(offsets[i]+8)>=second)group.racy=true;
   }
-  if ([...folders].reduce((sum,f)=>sum+f.length+20,0)>32000) return false;
-  const prefix = root + path.sep;
-  for (let i=0; i<files.length; i++) {
-    if (!folders.has(group(files[i]))) continue;
-    const at = offsets[i];
-    const mode = bytes.readUInt32BE(at+24);
-    if ((mode & 0o170000) !== 0o100000) return false;
-    const cs = bytes.readUInt32BE(at+4), ms = bytes.readUInt32BE(at+12);
-    if (!cs || !ms) return false;
-    let st;
-    try { st = fs.lstatSync(prefix+files[i],{bigint:true,throwIfNoEntry:false}); }
-    catch { return false; }
-    if (!st?.isFile() || st.size !== BigInt(bytes.readUInt32BE(at+36)) ||
-        st.mtimeNs !== BigInt(bytes.readUInt32BE(at+8))*1000000000n+BigInt(ms) ||
-        st.ctimeNs !== BigInt(bytes.readUInt32BE(at))*1000000000n+BigInt(cs) ||
-        st.ctimeNs >= snapshot.mtimeNs || st.mtimeNs >= snapshot.mtimeNs ||
-        Number(st.ino & 0xffffffffn) !== bytes.readUInt32BE(at+20) ||
-        (Number(st.mode)&0o100) !== (mode&0o100)) return false;
+  const racyCount=groups.reduce((count,g)=>count+(g.racy?g.end-g.start:0),0);
+  if(!racyCount)return false;
+  // When most files need precise stats, verify the small remainder in the
+  // same pass. Starting diff-files would reread and preload the entire index.
+  const verifyAll=racyCount>=files.length*0.75;
+  const prefix=root+path.sep;
+  for(const {name,start,end,racy} of groups){
+    if(!racy && !verifyAll){remaining.add(name);continue;}
+    folders.add(name);
+    for(let i=start;i<end;i++){
+      const at = offsets[i];
+      const mode = bytes.readUInt32BE(at+24);
+      if ((mode & 0o170000) !== 0o100000) return false;
+      const cs = bytes.readUInt32BE(at+4), ms = bytes.readUInt32BE(at+12);
+      if (!cs || !ms) return false;
+      let st;
+      try { st = fs.lstatSync(prefix+files[i],{bigint:true,throwIfNoEntry:false}); }
+      catch { return false; }
+      if (!st?.isFile() || st.size !== BigInt(bytes.readUInt32BE(at+36)) ||
+          st.mtimeNs !== BigInt(bytes.readUInt32BE(at+8))*1000000000n+BigInt(ms) ||
+          st.ctimeNs !== BigInt(bytes.readUInt32BE(at))*1000000000n+BigInt(cs) ||
+          st.ctimeNs >= snapshot.mtimeNs || st.mtimeNs >= snapshot.mtimeNs ||
+          Number(st.ino & 0xffffffffn) !== bytes.readUInt32BE(at+20) ||
+          (Number(st.mode)&0o100) !== (mode&0o100)) return false;
+    }
   }
   const after = fs.statSync(index,{bigint:true,throwIfNoEntry:false});
-  return after?.ctimeNs === snapshot.ctimeNs && after.ino === snapshot.ino ? folders : false;
+  if(after?.ctimeNs!==snapshot.ctimeNs || after.ino!==snapshot.ino)return false;
+  // diff-files concerns tracked entries only. When the smaller side fits,
+  // ask Git for the unchecked directories directly (and skip it if empty).
+  if(remaining.size<=folders.size){
+    const include=[...remaining].map(name=>":(literal)"+name);
+    if(include.reduce((n,arg)=>n+arg.length+1,0)<=32000)return include;
+  }
+  if ([...folders].reduce((sum,f)=>sum+f.length+20,0)>32000)return false;
+  return [".",...[...folders].map(name=>":(exclude,literal)"+name)];
 }
