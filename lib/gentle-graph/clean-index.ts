@@ -54,8 +54,11 @@ export async function verifiedCleanIndex(root:string,layout:GitLayout):Promise<{
       if(ctime>=cutoff || mtime>=cutoff){verifyWithGit();return;}
       try{
         const stat=await fs.promises.lstat(path.join(root,file),{bigint:true});
+        // Git for Windows stores creation time in sd_ctime. Node also exposes
+        // the later NTFS change time, which must precede our index snapshot.
+        const indexCtime=process.platform==="win32"?stat.birthtimeNs:stat.ctimeNs;
         if(!stat.isFile() || stat.size!==BigInt(buffer.readUInt32BE(at+36))
-          || stat.mtimeNs!==mtime || stat.ctimeNs!==ctime
+          || stat.mtimeNs!==mtime || indexCtime!==ctime || stat.ctimeNs>=cutoff
           || process.platform!=="win32" && ((Number(stat.mode)&0o100)!==(mode&0o100)
               || Number(stat.ino & 0xffffffffn)!==buffer.readUInt32BE(at+20)))verifyWithGit();
       }catch{verifyWithGit();}

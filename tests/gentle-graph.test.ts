@@ -409,11 +409,19 @@ it("refreshes a worker result when a dirty source is edited again", async t=>{
   } finally {await closeQuerySessions();}
 });
 
-it("reports a broken Git index without starting a full filesystem scan", t => {
+it("reports a broken Git index and recovers on the next session query", async t => {
   const root = largeRepo(t, 1);
-  fs.writeFileSync(path.join(root, ".git", "index"), "broken Git index");
+  const {sessionQuery, closeQuerySessions} = await import("../lib/gentle-graph/query-session.ts");
+  const indexPath = path.join(root, ".git", "index");
+  const original = fs.readFileSync(indexPath);
+  fs.writeFileSync(indexPath, "broken Git index");
   assert.throws(() => graphGuide("billing", {projectRoot: root}), /Git ls-files failed/);
-  assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
+  try {
+    await assert.rejects(sessionQuery({root,kind:"guide",term:"billing"}), /Git .* failed/);
+    assert.equal(fs.existsSync(path.join(root, ".gentle-graph", "index.json")), false);
+    fs.writeFileSync(indexPath, original);
+    assert.match(await sessionQuery({root,kind:"guide",term:"billing"}), /billing\.ts/);
+  } finally { await closeQuerySessions(); }
 });
 
 it("keeps the persisted snapshot when only a source timestamp changes", t => {

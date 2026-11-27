@@ -46,7 +46,10 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
 
     function error(err: Error) {
       finish();
-      lane.worker = undefined;
+      if (lane.worker === worker) {
+        lane.worker = undefined;
+        lane.stopping = worker.terminate();
+      }
       reject(err);
     }
 
