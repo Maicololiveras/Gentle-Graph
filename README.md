@@ -2,104 +2,61 @@
 
 # Gentle Graph
 
-Grafo de código nativo para Gentle Shell que ayuda a los agentes a reutilizar módulos, evaluar el impacto de un cambio y encontrar pruebas relacionadas en cada worktree.
+Gentle Graph gives Gentle Shell agents a code map for each Git worktree. Ask where a feature belongs, open the exact lines of an existing implementation, or trace a symbol to its callers and related tests. The index updates on demand. The engine has no declared npm dependencies and runs without a separate indexing service.
 
-Antes de crear otro helper, el agente puede buscar una pieza existente. Antes de cambiar su firma, puede inspeccionar quién la llama y qué pruebas conviene ejecutar. El índice se actualiza al consultar el proyecto, sin servidor MCP ni sincronización manual.
+## Quick start
 
-| Herramienta | Pregunta que responde |
-| --- | --- |
-| `graph_guide` | ¿Qué módulos, patrones y contratos puedo reutilizar para esta tarea? |
-| `graph_inspect` | ¿Dónde está este símbolo, a qué llama y quién lo invoca? |
-| `graph_impact` | ¿Qué archivos y pruebas conviene revisar si lo cambio? |
-| `graph_register_pattern` | ¿Cómo dejo registrada una decisión de reutilización para futuras sesiones? |
-
-## Probar el motor
-
-Desde la raíz del clon, con Node.js 24, puedes ejecutar las pruebas y consultar el propio repositorio sin instalar paquetes.
+With Git and Node.js 24 or later, run this command from the repository root. The standalone engine works before you install the Pi extension.
 
 ```sh
-node --test tests/gentle-graph.test.ts
 node --input-type=module -e "import { graphInspect } from './lib/gentle-graph/index.ts'; console.log(graphInspect('syncGraphIndex'))"
 ```
 
-Cada worktree conserva su índice en `.gentle-graph/index.json` y pasa a SQLite WAL cuando supera 2000 archivos indexados. SQLite usa un esquema relacional v2, WAL y búsqueda FTS5 por ruta, etiquetas y símbolos. Si la base ya existe, se reutiliza también en proyectos pequeños. Para NFS o recursos SMB montados, configura `GENTLE_GRAPH_STORE=json`; las rutas UNC usan JSON automáticamente. La migración del índice SQLite anterior es transaccional. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
+This command inspects the current checkout. To inspect another project, pass `{ projectRoot: '/path/to/project' }` as the second argument.
 
-[Integrar con Gentle Shell y configurar subagentes](docs/gentle-graph-integration.md)
+- [Install in Gentle Shell, configure subagents and verify a session](docs/gentle-graph-integration.md)
+- [Run benchmarks, replay a saved pair and interpret results](docs/benchmarks.md)
+- [Contribute a language adapter and run CI checks](CONTRIBUTING.md)
+- [Agent usage instructions](skills/gentle-graph/SKILL.md) · [Contributor instructions for agents](skills/gentle-graph-contributor/SKILL.md)
 
-## Rendimiento
+## Tool reference
 
-La extensión carga el índice en la primera consulta. Durante dos segundos, las consultas del mismo worktree pueden reutilizar el inventario y las respuestas completas. Una ruta nueva o una edición en un archivo previamente limpio puede tardar hasta esa ventana en aparecer. Al vencer esa ventana, el motor compara las fechas de modificación y calcula SHA-256 para los archivos que cambiaron. Omite archivos mayores de 256 KiB y fuentes con sufijos como `.min.js` y `.bundle.js`.
+All four tools accept an optional `projectRoot`. Each example below shows a Pi tool name and its JSON arguments.
 
-Los mapas en memoria permiten buscar directamente un símbolo por nombre o identificador y recuperar sus llamadores por nombre. El tiempo de recorrer dependencias y de preparar recomendaciones depende del número de resultados. La respuesta de la extensión tiene un máximo de 1199 caracteres para guía sin fragmentos, 3000 para inspección y 2000 para impacto.
+| Tool | Example arguments | What to look for |
+| --- | --- | --- |
+| `graph_guide` | `{"intent":"find where agent tool overlays are loaded"}` | Up to three module recommendations with symbol ranges and available caller or test evidence. Use `read` with `offset` and `limit` on the returned lines. Optional `limit` accepts 1–20. |
+| `graph_inspect` | `{"symbol":"loadToolOverlays","depth":1}` | Definition, callers and callees. Use a qualified name such as `Store.Get` to narrow an ambiguous match. Depth accepts 1–3. |
+| `graph_impact` | `{"target":"loadToolOverlays"}` | Dependent files, related tests and affected patterns for a symbol or file. Check the partial-result flag on broad queries. |
+| `graph_register_pattern` | `{"domain":"agents","entry":"lib/agent-tool-overlay.ts","guidance":"Reuse the existing overlay loader."}` | Writes a confirmed reuse rule to the worktree guide. The optional `files` array records associated paths. |
 
-### Indexado progresivo en monorepos
+Ordinary guide output is capped at 1,199 characters. Set `includeSnippets: true` to include short excerpts and available caller, callee and implementation relationships for up to three symbols in 3,000 characters. Inspection and impact have limits of 3,000 and 2,000 characters respectively.
 
-En un worktree Git con más de 500 rutas de código, la guía selecciona hasta 15 candidatos por intención y sigue sus imports relativos un salto. Las rutas modificadas y los patrones registrados se revisan aunque queden fuera de esos candidatos. Una guía en frío usa el parser ligero, y las consultas de referencias afinan las entradas con el parser habitual. En repos pequeños y directorios sin Git se conserva la sincronización completa. Si Git falla durante una consulta en un repositorio, se puede reintentar.
+## Language and architecture support
 
-Para módulos TS/JS, el impacto sigue imports y reexportaciones relativos y usa las declaraciones para localizar los llamadores. En otros lenguajes puede ampliar la búsqueda por nombre. Si se agota el presupuesto de 1500 ms, la salida indica que el impacto es parcial. Las referencias dinámicas y los nombres ambiguos conservan las limitaciones del parser.
-
-Para medir una guía en frío en tu máquina:
-
-```sh
-node scripts/bench-jit.mjs 5000
-node scripts/bench-jit.mjs 30000
-```
-
-El cronómetro incluye la consulta, el descubrimiento de rutas y la escritura del índice. La creación del repositorio de prueba y el arranque de Node quedan fuera. Para validar cambios, ejecuta `pnpm test`. El chequeo `pnpm typecheck` usa el compilador TypeScript, tipos de Node, Pi y TypeBox del entorno de desarrollo de Gentle Shell.
-
-### Lenguajes, WPF y guía arquitectónica
-
-La opción `includeSnippets: true` de `graph_guide` añade hasta tres símbolos de los módulos recomendados con código, llamadores, llamadas e implementaciones explícitas. La respuesta ampliada usa hasta 3000 caracteres. La guía habitual contiene hasta 1199 caracteres. Las referencias dependen de las declaraciones que reconoce el adaptador.
-
-| Ecosistema | Evidencia que puede encontrar |
+| Ecosystem | Examples of indexed evidence |
 | --- | --- |
-| Java y PHP | Clases, métodos, interfaces, herencia e implementaciones. Señales de Spring Boot, Laravel y Symfony. |
-| Ruby | Clases, módulos, métodos, herencia y mixins. Rails en Gemfile. |
-| SvelteKit | Componentes importados, uso en el template, rutas y alias estándar `$lib`. |
-| C y C++ | Includes locales, funciones, métodos calificados y bases de clases. |
-| Kotlin y Swift | Interfaces y protocolos, clases, actores y extensiones. Señales de Android MVVM, Ktor y SwiftUI. |
-| Dart y Flutter | Clases, mixins y referencias declaradas en pubspec.yaml a Flutter, BLoC y Riverpod. |
+| TypeScript / JavaScript | Functions, class methods, imports and re-exports. The host TypeScript parser is used when available. |
+| Python, Go and Rust | Python classes and methods, Go receiver methods, Rust traits and implementations, and language-specific test paths. Qualified names include `Store.Get` and `Client::fetch`. |
+| C# / WPF | Interfaces, consumers, XAML bindings, code-behind and ViewModel commands. Try `graph_impact` on a Toolkit method such as `SaveOrderAsync` and inspect its bound view. |
+| Java, PHP and Ruby | Types, inheritance, implementations and mixins as applicable. Manifests supply evidence for Spring Boot, Laravel, Symfony or Rails. |
+| Svelte / SvelteKit | Imported components, template uses, route files and the standard `$lib` alias. |
+| C / C++ | Local includes, functions, qualified methods and base classes. |
+| Kotlin, Swift and Dart | Interfaces, protocols, actors, extensions or mixins as applicable. Framework signals include Android MVVM, Ktor, SwiftUI, Flutter, BLoC and Riverpod. |
 
+The architecture guide combines directories, manifests and indexed symbols. In .NET solutions it also reads project and package references from `.csproj` files. Project contracts and registered patterns take precedence over inferred boundaries. In WPF, follow the binding through its DataContext and command registration. A test that calls a calculation helper gives evidence about that helper. Verify the command's own execution, enablement and binding separately.
 
-El índice reconoce TS/JS, Python, Go, Rust, C# y XAML. Puedes consultar métodos por nombre cualificado, como `Store.Get` o `Client::fetch`. En WPF, prueba `graph_impact("SaveOrderAsync")` para seguir el comando generado por el Toolkit hasta la vista que lo enlaza. Las dependencias por interfaz indican consumidores potenciales. El análisis es estático y funciona sin MSBuild ni intérprete de Python.
+## Indexing and storage
 
-La guía combina carpetas, manifiestos y símbolos ya indexados para reconocer capas, slices y patrones de UI. El perfil por worktree se guarda en `.gentle-graph/profile.json`. Para soluciones .NET incluye los paquetes y las referencias entre proyectos declaradas en los archivos `.csproj`. Las reglas de `guide.json` y los contratos del proyecto tienen prioridad sobre las fronteras inferidas.
+Small repositories and directories outside Git use a full incremental sync. Above 500 indexable paths in Git, the guide selects up to 15 candidates by intent and follows relative imports one hop. Changed paths and registered patterns also inform indexing. Symbol queries can expand the search as needed. A two-second session cache means a new file or edit may take that long to appear. The engine checks modification times and hashes changed content, skipping files over 256 KiB and minified bundles.
 
-Por defecto se usa TypeScript del host cuando está disponible. Establece `GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT=1` para usar el compilador de un proyecto de confianza o `GENTLE_GRAPH_DISABLE_TOOLCHAINS=1` para usar solo el parser léxico.
+TS/JS impact analysis follows relative imports and re-exports. Other adapters can search by name. Dynamic calls and duplicate names can make results ambiguous. If expansion exceeds its 1,500 ms budget, impact reports a partial result. Suggested tests are starting points for verification.
 
-[Guía de pruebas A/B, rendimiento y aislamiento de subagentes](docs/gentle-graph-integration.md)
+| Worktree file | Purpose |
+| --- | --- |
+| `.gentle-graph/index.json` | Regenerable index for small indexed sets. |
+| `.gentle-graph/index.sqlite` | SQLite WAL storage above 2,000 **indexed files**. An existing database is reused. Schema v2 supports transactional migration, indexed edges and FTS5 search over paths, tags and symbols. |
+| `.gentle-graph/profile.json` | Generated architecture profile. |
+| `.gentle-graph/guide.json` | Human-readable reuse patterns. Commit this file to share decisions with the team. |
 
-## Cómo sumar un lenguaje
-
-1. Crea un módulo en `lib/gentle-graph/languages/` que implemente `LanguageAdapter`.
-2. Declara sus extensiones, extrae símbolos con líneas de origen e implementa `isTestFile`.
-3. Reutiliza los helpers de `lexer-core.ts` y añade `resolveRelativeImport` cuando corresponda.
-4. Registra el adaptador en `registry.ts` para que lo descubran el indexador completo y JIT.
-5. Añade un fixture realista en `tests/languages.test.ts` con un caso positivo y uno que descarte falsos enlaces.
-6. Ejecuta `pnpm typecheck` y `pnpm test` con las herramientas del host. Esta distribución declara **Node 24 o superior**. Node 22 queda fuera de su soporte declarado.
-
-## Prueba local exigente sobre Gentle Shell
-
-Con Node 24+, Git y tu Pi autenticado, ejecuta desde Gentle Graph:
-
-```powershell
-node scripts/bench-gentle-shell.mjs "C:\repos\gentle-shell" "proveedor/modelo" 1
-```
-
-Usa el identificador exacto proveedor/modelo. El razonamiento está fijado en `high`; se puede configurar con `GENTLE_BENCH_THINKING`. El clon de Gentle Shell debe tener las dependencias de desarrollo instaladas. El verificador las utiliza después del turno en el worktree aislado. Un par son dos ejecuciones pagadas con el mismo commit, tarea y configuración.
-
-El benchmark v2 plantea un problema observable al descubrir subagentes. A utiliza Pi con sus herramientas estándar. B recibe Gentle Graph y decide si lo necesita. El informe registra esa decisión. La verificación incluye precedencia, reglas literales de la API existente, avisos y una lectura por archivo durante el descubrimiento de dos agentes. También ejecuta la suite de overlays de Gentle Shell y el compilador TypeScript sobre cada parche.
-
-La aprobación exige calidad y mediciones completas en ambos brazos, más una reducción estricta de tokens totales y de tiempo del agente en cada par. Un par favorable se etiqueta `pilot-pass`. Dos o más pares favorables, con orden alternado, reciben `passed`. La primera regresión detiene las ejecuciones restantes. Lee `informe-ab.md` y `summary.json` en la ruta que imprime el script. Las cifras son específicas de esta tarea y modelo. El tiempo incluye la espera del proveedor. La telemetría `engine-times.jsonl` de B mide el motor dentro de la extensión y `tool-times.jsonl` mide los intervalos de Pi por ID de llamada, que pueden solaparse.
-
-### Reproducir un par guardado sin consumir tokens
-
-Desde Gentle Graph, indica el clon de Gentle Shell y la carpeta que contiene `results.json`, `baseline` y `graph` del par anterior:
-
-```powershell
-node scripts/replay-shell-pair.mjs "C:\repos\gentle-shell" "C:\ruta\al\pair-1"
-```
-
-El replay usa el SHA de Gentle Shell guardado y el motor del clon actual de Gentle Graph. Extrae las consultas de lectura de la sesión B, las mide con índice nuevo por llamada y luego en secuencia, y guarda tiempos, caracteres y archivos indexados en `replay.json`. Después aplica cada parche a su propio worktree temporal y ejecuta la verificación reforzada. Las operaciones que ocurrieron entre consultas en la sesión original no se reproducen. Cada código de salida y su log permiten distinguir errores de tipos, pruebas fallidas e incidencias de entorno.
-
-[Guía de colaboradores y requisitos para abrir una PR](CONTRIBUTING.md)
+Set `GENTLE_GRAPH_STORE=json` for NFS or mounted SMB storage. UNC paths select JSON automatically. Set `GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT=1` to allow the compiler from a trusted workspace, or `GENTLE_GRAPH_DISABLE_TOOLCHAINS=1` to use lexical parsing only.

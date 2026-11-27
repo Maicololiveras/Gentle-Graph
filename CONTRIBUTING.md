@@ -1,26 +1,28 @@
-# Contribuir a Gentle Graph
+# Contributing to Gentle Graph
 
-Usa Node 24 o superior, Git y pnpm. El paquete se distribuye con cero dependencias npm declaradas. El host Gentle Shell proporciona Pi y TypeBox. Para verificar un clon independiente instala exclusivamente el entorno de desarrollo con el comando que usa CI:
+Use Node.js 24 or later, Git and pnpm. Gentle Shell supplies Pi and TypeBox. For a standalone checkout, install the same development tools as CI:
 
 ```sh
 npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund typescript@5.9.3 @types/node@24.13.3 typebox@1.1.38 @earendil-works/pi-coding-agent@1.6.0
 ```
 
-## Añadir o mejorar un lenguaje
+## Add or improve a language
 
-1. Implementa el contrato `LanguageAdapter` en `lib/gentle-graph/languages/<lang>.ts`. Conserva archivo, símbolo y líneas en cada referencia.
-2. Registra sus extensiones y convenciones de tests en `languages/registry.ts`. Si procede, añade evidencia de arquitectura en `arch-detector.ts`.
-3. Incluye un fixture realista en `tests/languages.test.ts` con contrato, implementación y consumidor. Comprueba que únicamente la implementación aparece en `implementations` y que `isTestFile` reconoce los tests del ecosistema.
-4. Mantén separadas las consultas de guía, inspección e impacto y el parseo por lenguaje. Conserva la fachada pública en `index.ts`.
+1. Implement `LanguageAdapter` in `lib/gentle-graph/languages/<language>.ts`. Preserve file paths, symbol names and source lines. Reuse helpers from `lexer-core.ts` and implement `resolveRelativeImport` where applicable.
+2. Register extensions and test-file conventions in `languages/registry.ts` so full and JIT indexing agree. Add architecture evidence in `arch-detector.ts` if the ecosystem needs it.
+3. In `tests/languages.test.ts`, add a realistic contract, implementation and consumer. Assert the implementation and the consumer are classified separately. Check positive and negative matches and the adapter's `isTestFile` conventions.
+4. Keep parsing in the adapter and query behavior in `query-guide.ts`, `query-inspect.ts` or `query-impact.ts`. Preserve the public API of `index.ts`.
 
-## Linux y Windows
+## Linux and Windows conventions
 
-Normaliza las rutas internas a `/` y manipúlalas con `path.posix`. Usa rutas nativas al acceder al sistema de archivos. Divide texto en líneas con `/\r?\n/`. Ejecuta procesos con argumentos separados y `windowsHide: true`. Envía las listas grandes de términos de Git por stdin con `git grep -F -f -`. Conserva las rutas relativas al worktree consultado.
+Normalize internal paths to `/` and operate on them with `path.posix`. Use native paths for filesystem access. Split text with `/\r?\n/`. Pass child-process arguments separately, set `windowsHide: true`, and send large term lists to Git over stdin with `git grep -F -f -`. Resolve paths relative to the queried worktree.
 
-## Antes de abrir la PR
+## Before opening a pull request
 
-- Ejecuta `pnpm typecheck` y `pnpm test`. Adjunta el resultado y el número de pruebas aprobadas.
-- Ejecuta `node scripts/bench-jit.mjs 30000 --check`. Publica mediana y p95 de la guía en frío. El p95 debe ser inferior a 150 ms.
-- Documenta el sistema probado localmente y los resultados de la matriz Linux/Windows cuando estén disponibles.
-- Cualquier modificación de `package.json` requiere aprobación previa. Conserva cero dependencias npm y evita binarios externos adicionales.
-- Para cambios del motor, herramientas o prompt, adjunta el informe del comparador A/B sobre el mismo commit, modelo y configuración de razonamiento. Ambos parches deben pasar la verificación. B debe consumir estrictamente menos tokens y terminar en menos tiempo en cada par. Una medición pendiente se declara pendiente. Consulta el procedimiento en el README.
+- Run `pnpm typecheck` and `pnpm test`. Include their outcome and the passing test count.
+- Run `node scripts/bench-jit.mjs 30000 --check`. Report the cold-guide median and p95. The p95 must be below 150 ms.
+- Record the OS used locally and the Linux and Windows CI results when available.
+- Obtain approval before changing `package.json`. Keep zero declared npm dependencies and avoid adding external binaries.
+- For engine, tool or prompt changes, attach the A/B report for the same commit, model and reasoning level. Both patches must pass verification. Each pair must show strictly fewer total tokens and less agent time with Gentle Graph. Mark outstanding measurements as pending.
+
+[Benchmark commands and acceptance criteria](docs/benchmarks.md) · [Project overview](README.md)

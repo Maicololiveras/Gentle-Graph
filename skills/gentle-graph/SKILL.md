@@ -1,14 +1,14 @@
 ---
 name: gentle-graph
-description: Localizar piezas reutilizables, llamadores y dependencias cuando la ubicación o el impacto de un cambio sean inciertos.
+description: Find reusable code, callers and dependents when the location or impact of a change is uncertain.
 ---
 
 # Gentle Graph
 
-Elige la consulta que resuelva la duda actual. Usa `graph_guide` para encontrar un módulo reutilizable, `graph_inspect` para ubicar un símbolo y sus llamadores, o `graph_impact` para identificar dependientes y pruebas antes de un cambio.
+Use `graph_guide` to locate a reusable module, `graph_inspect` to find a symbol and its callers, or `graph_impact` to identify dependents and related tests before a change.
 
-Después de `graph_guide`, usa `read` con `offset` y `limit` sobre las líneas indicadas. Amplía el tramo si falta contexto.
+After `graph_guide`, use `read` with `offset` and `limit` on the reported lines. Widen the range if you need more context.
 
-Si ya conoces el archivo, lee directamente el tramo relevante. Para una coincidencia literal, usa `rg` o `grep`. Aprovecha las referencias ya obtenidas y evita repetir una búsqueda que responde la misma pregunta.
+When you already know the file, read the relevant range directly. Use `rg` or `grep` for a literal match. Reuse evidence from earlier calls.
 
-Mantén las consultas en el worktree asignado. Registra con `graph_register_pattern` las decisiones de reutilización confirmadas que deban servir para tareas futuras.
+Keep queries in the assigned worktree. Use `graph_register_pattern` to record confirmed reuse decisions that should guide future work.
