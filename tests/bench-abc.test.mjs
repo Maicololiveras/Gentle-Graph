@@ -55,3 +55,42 @@ test("ABC loads the Codex import-only provider from the selected Pi installation
   fs.writeFileSync(path.join(pkg,"openai-codex.js"),'export const openaiCodexProvider=()=>({auth:{oauth:{name:"fixture"}}})');
   assert.equal((await loadCodexOAuth(path.join(root,"cli.js"))).name,"fixture");
 });
+
+test("captures tracked and new files around ignored modules without changing the real index",async t=>{
+  const {execFileSync}=await import("node:child_process");
+  const {capturePatch}=await import("../scripts/bench-shell/abc-worktree.mjs");
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),"abc-patch-test-"));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const git=(...args)=>execFileSync("git",args,{cwd:root,stdio:["ignore","pipe","pipe"]});
+  git("init","-q");
+  fs.writeFileSync(path.join(root,".gitignore"),"node_modules/\n*.ignored\n");
+  fs.writeFileSync(path.join(root,"old"),"old\n");
+  git("add",".");
+  git("-c","user.name=Test","-c","user.email=test@example.invalid","commit","-qm","fixture");
+  for(const name of ["node_modules",".codegraph",".gentle-graph"]){
+    fs.mkdirSync(path.join(root,name));
+    fs.writeFileSync(path.join(root,name,"noise"),"ignored engine output");
+  }
+  assert.equal(capturePatch(root).length,0);
+  fs.unlinkSync(path.join(root,"old"));
+  fs.writeFileSync(path.join(root,"new [feature]"),Buffer.from([0,1,2,3]));
+  fs.writeFileSync(path.join(root,"other.ignored"),"excluded");
+  const status=git("status","--porcelain=v1","-z");
+  const patch=capturePatch(root).toString();
+  assert.match(patch,/deleted file mode/);
+  assert.match(patch,/new \[feature\]/);
+  assert.match(patch,/GIT binary patch/);
+  assert.doesNotMatch(patch,/node_modules|\.codegraph|\.gentle-graph|other\.ignored/);
+  assert.deepEqual(git("status","--porcelain=v1","-z"),status);
+});
+
+test("cleanup retries locked worktrees and continues after a persistent error",async ()=>{
+  const {cleanWorktrees}=await import("../scripts/bench-shell/abc-worktree.mjs");
+  const calls=[];
+  const errors=await cleanWorktrees([["repo","good"],["repo","busy"],["repo","preserve"]],(_root,cwd)=>{
+    calls.push(cwd);
+    if(cwd==="busy")throw Error("locked");
+  },new Set(["preserve"]));
+  assert.deepEqual(calls,["busy","busy","busy","busy","good"]);
+  assert.deepEqual(errors,[{cwd:"busy",error:"Error: locked"}]);
+});

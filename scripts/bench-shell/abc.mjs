@@ -5,6 +5,7 @@ import {fileURLToPath} from "node:url";
 import {execFileSync, spawnSync} from "node:child_process";
 import {deviceSession, runPi} from "./abc-auth.mjs";
 import {sessionMetrics} from "./session-metrics.mjs";
+import {capturePatch, cleanWorktrees} from "./abc-worktree.mjs";
 import {reportABC} from "./abc-report.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,7 @@ export async function runABC(argv){
   const manifest={out,graphSHA,shellSHA,harnessSHA:git(graphRepo,"rev-parse","HEAD").trim(),model,thinking:"high",
     os:os.version()+" "+os.release()+" "+os.arch(),node:process.version,pi,piPackage:pkg,piBin:bin,piRuntime:cli,modules,typescript:ts,codegraph:cgVersion,binary,orders,arms:names,rows:[]};
   const environments=[];
+  const retained=new Set();
   try{
     const engine=path.join(temp,"engine");
     checkout(graphRepo,engine,graphSHA);
@@ -133,6 +135,7 @@ export async function runABC(argv){
       if(arm==="C")args.push("-e",path.join(engine,"extensions/gentle-graph.ts"));
       const clean=verify(cwd,env,["scripts/check-types.mjs"],path.join(folder,"clean-typecheck.txt"));
       if(clean!==0)throw Error("Clean typecheck failed in "+folder);
+      if(capturePatch(cwd).length)throw Error("Expected an empty patch during preflight at "+cwd);
       const cgDir=path.join(cwd,".codegraph");
       const setup=performance.now();
       if(arm==="B" && env.CODEGRAPH_PREPARE_ARGV){
@@ -158,6 +161,8 @@ export async function runABC(argv){
       const start=Date.now(),begin=performance.now();
       const exit=await runPi(cli,[...e.args,"-p",task],cwd,{...env,GENTLE_ABC_PROBE:"0"},path.join(folder,"agent-output.txt"),access);
       const elapsedMs=performance.now()-begin;
+      retained.add(cwd);
+      save(path.join(folder,"agent-timing.json"),{start,elapsedMs,agentExit:exit,cwd});
       const metric=sessionMetrics(e.sessions);
       const eventsFile=path.join(folder,"calls.jsonl");
       const events=fs.existsSync(eventsFile)?fs.readFileSync(eventsFile,"utf8").trim().split(/\r?\n/).filter(Boolean).map(JSON.parse):[];
@@ -171,21 +176,24 @@ export async function runABC(argv){
       const initializedAfter=fs.existsSync(e.cgDir);
       const tests=verify(cwd,env,["--test",path.join(engine,"scripts/bench-shell/verify.mjs")],path.join(folder,"verification-tests.txt"));
       const typecheck=verify(cwd,env,[path.join(modules,"typescript/bin/tsc"),"--noEmit","-p","tsconfig.json"],path.join(folder,"verification-tsc.txt"));
-      const exclusions=[":(exclude)node_modules",":(exclude).gentle-graph",":(exclude).codegraph"];
-      git(cwd,"add","-N","--",".",...exclusions);
-      const patch=execFileSync("git",["-C",cwd,"diff","--binary","HEAD","--",".",...exclusions],{maxBuffer:64*1024*1024});
-      fs.writeFileSync(path.join(folder,"changes.patch"),patch);
       const firstEdit=events.find(v=>v.tool==="edit");
       const row={round:e.r,arm,folder,tests,typecheck,agentExit:exit,elapsedMs,firstEditMs:firstEdit?firstEdit.time-start:null,
-        patchBytes:patch.length,turns:metric.turns,tokens:metric.measuredTurns===metric.turns && metric.turns?metric.tokens:null,
+        patchBytes:null,turns:metric.turns,tokens:metric.measuredTurns===metric.turns && metric.turns?metric.tokens:null,
         ...metric.totals,tools,nested,searches:events.filter(v=>v.search||["grep","rg","find"].includes(v.tool)).length,
         graphUsed:Object.keys(tools).some(arm==="B"?isCG:isGG),setupMs:e.setupMs,codegraphBefore:e.initialized,codegraphAfter:initializedAfter,
         models:[...metric.models],thinking:state?.thinking};
-      row.valid=exit===0 && tests===0 && typecheck===0 && !!state && checkTools(state,arm) &&
-        !metric.failedTurn && metric.models.size===1 && metric.models.has(model) && row.tokens>0;
+      row.valid=false;
       manifest.rows.push(row);
       save(path.join(folder,"results.json"),row);
       reportABC(manifest);
+      const patch=capturePatch(cwd);
+      fs.writeFileSync(path.join(folder,"changes.patch"),patch);
+      row.patchBytes=patch.length;
+      row.valid=exit===0 && tests===0 && typecheck===0 && !!state && checkTools(state,arm) &&
+        !metric.failedTurn && metric.models.size===1 && metric.models.has(model) && row.tokens>0;
+      save(path.join(folder,"results.json"),row);
+      reportABC(manifest);
+      retained.delete(cwd);
     }
     if(manifest.rows.some(row=>!row.valid))process.exitCode=1;
   }catch(error){
@@ -193,11 +201,16 @@ export async function runABC(argv){
     reportABC(manifest);
     throw error;
   }finally{
-    for(const [root,cwd] of worktrees.reverse()){
-      const link=path.join(cwd,"node_modules");
-      if(fs.lstatSync(link,{throwIfNoEntry:false})?.isSymbolicLink())fs.rmdirSync(link);
-      git(root,"worktree","remove","--force",cwd);
+    const errors=await cleanWorktrees(worktrees,(root,cwd)=>git(root,"worktree","remove","--force",cwd),retained);
+    if(!errors.length && !retained.size){
+      try {fs.rmSync(temp,{recursive:true,force:true,maxRetries:6,retryDelay:200});}
+      catch(error){errors.push({cwd:temp,error:String(error)});}
     }
-    fs.rmSync(temp,{recursive:true,force:true,maxRetries:6,retryDelay:200});
+    if(errors.length || retained.size){
+      const cleanup={temp,retained:[...retained],errors};
+      console.error("Benchmark cleanup:",cleanup);
+      save(path.join(out,"cleanup.json"),cleanup);
+      process.exitCode=1;
+    }
   }
 }
