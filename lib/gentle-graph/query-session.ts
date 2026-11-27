@@ -68,7 +68,7 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
     worker.once("error", error);
     async function send() {
       // Run the first Git commands while Node loads the language adapters in the worker.
-      const prepared = cold ? await prepareColdScope(query.root) : undefined;
+      const prepared = cold ? await prepareColdScope(query.root, query.kind === "inspect" ? query.term : undefined) : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
       if (lane.worker === worker && !lane.closed) worker.postMessage({query, prepared});
     }

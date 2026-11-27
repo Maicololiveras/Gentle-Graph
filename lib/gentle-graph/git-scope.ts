@@ -163,7 +163,7 @@ async function metadata(files:string[]):Promise<string>{
   return hash.digest("hex");
 }
 
-export async function prepareColdScope(root:string):Promise<[GitSnapshot|null,Inventory|null]>{
+export async function prepareColdScope(root:string, inspectTerm?:string):Promise<[GitSnapshot|null,Inventory|null]>{
   const layout=rootLayout(root);
   if(layout)layouts.set(root,layout);
   // Git for Windows scans tracked and untracked entries in one status pass.
@@ -171,7 +171,17 @@ export async function prepareColdScope(root:string):Promise<[GitSnapshot|null,In
   if(layout && process.platform==="win32"){
     const tracked=readTrackedIndexPaths(root,layout);
     if(tracked){
-      const state=await gitSnapshot(root);
+      // A single unqualified lowercase-initial name is the first literal of
+      // inspect. Overlap its read-only search with status on large worktrees.
+      // Dirty snapshots use the normal search after status has settled.
+      const simple = inspectTerm && /^[a-z][$\w]*$/.test(inspectTerm) && !inspectTerm.endsWith("Command");
+      const [state, hits] = await Promise.all([
+        gitSnapshot(root),
+        simple ? gitGrepFiles(root, inspectTerm!, Infinity, null).catch(() => null) : null
+      ]);
+      if (simple && state && !state.dirty.length && hits) {
+        state.greps.set(JSON.stringify([inspectTerm]), hits);
+      }
       if(state){
         const untracked=state.untracked??[];
         const inventory={files:[...tracked,...untracked],untracked};
