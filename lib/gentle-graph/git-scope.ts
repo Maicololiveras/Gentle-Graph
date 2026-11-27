@@ -205,6 +205,21 @@ export async function grepImpactProjection(root:string, term:string, trackedOnly
   return {hits:[...hits],projection};
 }
 
+// Searching the staged objects avoids opening every working file on NTFS.
+// Only use these speculative hits after status confirms a clean tree and
+// attributes confirm that checkout does not transform the searchable text.
+export async function cleanLiteralHits(root:string,term:string,tracked:string[]){
+  const [attributes,rows]=await Promise.all([
+    requireGitPaths(root,["check-attr","-z","--all","--stdin"],tracked.join("\0")+"\0"),
+    requireGitPaths(root,grepArgs.map(arg=>arg==="--untracked"?"--cached":arg),term+"\n")
+  ]);
+  if(!attributes || !rows)return null;
+  for(let i=1;i<attributes.length;i+=3){
+    if(["ident","filter","working-tree-encoding"].includes(attributes[i]))return null;
+  }
+  return rows.filter(isIndexableFile);
+}
+
 export interface GitSnapshot {
   root:string;
   key:string;
@@ -309,7 +324,7 @@ export async function prepareColdScope(root:string, inspectTerm?:string, impact=
       // grep already scanning, avoid three competing Git processes on NTFS.
       const [state, hits, projection] = await Promise.all([
         inventorySnapshot().then(result=>result?.[0] ?? gitSnapshot(root)),
-        combined ? combined.then(result=>result?.hits) : simple ? requireGitPaths(root,grepArgs.filter(arg=>arg!=="--untracked"),inspectTerm+"\n").then(rows=>rows?.filter(isIndexableFile)).catch(()=>null) : null,
+        combined ? combined.then(result=>result?.hits) : simple ? cleanLiteralHits(root,inspectTerm!,tracked).catch(()=>null) : null,
         combined ? combined.then(result=>result?.projection) : projectImports ? requireGitPaths(root, projectionArgs, projectionPattern).catch(() => null) : null
       ]);
       if (state && !state.dirty.length && projection) state.projection = projection;
