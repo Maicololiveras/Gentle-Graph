@@ -1,5 +1,5 @@
 import { resolveImport } from "./languages/registry.ts";
-import {closeSql,readSqlIndex,refreshSqlIndex,writeSqlIndex,sqlVersion,searchSqlFiles} from "./store-sqlite.ts";
+import {existingBackend,sqliteBackend} from "./sqlite-backend.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -126,7 +126,7 @@ export function clearMemoryCache(projectRoot?:string){
   const root=projectRoot ? path.resolve(projectRoot) : undefined;
   if(root){memoryIndexCache.delete(root);stamps.delete(root);}
   else{memoryIndexCache.clear();stamps.clear();}
-  closeSql(root);
+  existingBackend()?.closeSql(root);
 }
 export function jsonOnly(root:string){
   return process.env.GENTLE_GRAPH_STORE==="json" || /^(?:\\\\|\/\/)/.test(root);
@@ -135,14 +135,14 @@ function hasSql(root:string){
   return !jsonOnly(root) && fs.existsSync(path.join(root,GRAPH_DIR,"index.sqlite"));
 }
 export function searchIndexedFiles(root:string,intent:string,limit=15){
-  return hasSql(root)?searchSqlFiles(root,intent,limit):undefined;
+  return hasSql(root)?sqliteBackend().searchSqlFiles(root,intent,limit):undefined;
 }
 function jsonStamp(file:string){
   const stat=fs.statSync(file,{bigint:true,throwIfNoEntry:false});
   return stat ? "json:"+stat.mtimeNs+":"+stat.size+":"+stat.ino : "absent";
 }
 export function indexStamp(root:string){
-  return hasSql(root)?"sql:"+sqlVersion(root):jsonStamp(path.join(root,GRAPH_DIR,INDEX_FILE));
+  return hasSql(root)?"sql:"+sqliteBackend().sqlVersion(root):jsonStamp(path.join(root,GRAPH_DIR,INDEX_FILE));
 }
 export function loadGraphIndex(projectRoot:string):GraphIndex{
   const root=path.resolve(projectRoot);
@@ -150,11 +150,11 @@ export function loadGraphIndex(projectRoot:string):GraphIndex{
   const cached=memoryIndexCache.get(root);
   if(cached && stamps.get(root)===stamp)return cached;
   if(cached && stamp.startsWith("sql:") && stamps.get(root)?.startsWith("sql:")){
-    const changed=refreshSqlIndex(root,cached);
+    const changed=sqliteBackend().refreshSqlIndex(root,cached);
     if(changed){patchLookup(cached,changed);stamps.set(root,stamp);return cached;}
   }
   let index:GraphIndex;
-  if(stamp.startsWith("sql:"))index=readSqlIndex(root);
+  if(stamp.startsWith("sql:"))index=sqliteBackend().readSqlIndex(root);
   else if(stamp!=="absent"){
     try{const data=JSON.parse(fs.readFileSync(path.join(root,GRAPH_DIR,INDEX_FILE),"utf8"));if(data.version===8 && data.files)index=data;}
     catch{/* Rebuild an unreadable JSON cache on the next query. */}
@@ -218,12 +218,12 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   // Retain the version observed before our write. A concurrent commit is then
   // detected on the next read, even when it landed just before this transaction.
   if(hasSql(root) && !fs.existsSync(file)){
-    writeSqlIndex(root,index,changed,false);return;
+    sqliteBackend().writeSqlIndex(root,index,changed,false);return;
   }
   // Publish the first JSON snapshot without allocating a second lock file.
   // A hard link installs complete bytes exclusively. Contending creators
   // merge their deltas under the regular lock when the destination exists.
-  if(stamps.get(root)==="absent" && !jsonOnly(root) && process.env.GENTLE_GRAPH_STORE!=="sqlite" &&
+  if(stamps.get(root)==="absent" && !jsonOnly(root) &&
       Object.keys(index.files).length<=2000 && !fs.existsSync(file)){
     const tmp=file+"."+randomUUID()+".tmp";
     try{
@@ -239,7 +239,7 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   }
   withFileLock(path.join(dir,"index.lock"),()=>{
     if(hasSql(root)){
-      writeSqlIndex(root,index,changed,true);fs.rmSync(file,{force:true});stamps.delete(root);return;
+      sqliteBackend().writeSqlIndex(root,index,changed,true);fs.rmSync(file,{force:true});stamps.delete(root);return;
     }
     const before=jsonStamp(file);
     let next=index;
@@ -248,8 +248,8 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
       next={...index,files:{...disk.files}};
       for(const f of changed){if(index.files[f])next.files[f]=index.files[f];else delete next.files[f];}
     }
-    if(!jsonOnly(root) && (process.env.GENTLE_GRAPH_STORE==="sqlite" || Object.keys(next.files).length>2000)){
-      writeSqlIndex(root,next,changed,true);
+    if(!jsonOnly(root) && Object.keys(next.files).length>2000){
+      sqliteBackend().writeSqlIndex(root,next,changed,true);
       fs.rmSync(file,{force:true});
       stamps.delete(root);
     }else{
@@ -274,15 +274,27 @@ export function loadArchGuide(projectRoot: string): ArchGuideStore {
 }
 
 export function updateArchGuide(root: string, edit: (guide: ArchGuideStore) => void): void {
-  const dir = ensureGraphDir(path.resolve(root));
-  withFileLock(path.join(dir,"guide.lock"),()=>{
-    const file = path.join(dir, GUIDE_FILE);
-    const guide: ArchGuideStore = fs.existsSync(file)
-      ? JSON.parse(fs.readFileSync(file, "utf8"))
-      : { version: 1, patterns: [] };
-    if (guide.version !== 1) throw new Error("Unsupported guide version");
-    guide.patterns ??= [];
+  const dir=path.join(path.resolve(root),GRAPH_DIR);
+  const file=path.join(dir,GUIDE_FILE);
+  function snapshot(){
+    try{return fs.readFileSync(file,"utf8");}
+    catch(e){if(e.code!=="ENOENT")throw e;return "";}
+  }
+  function changed(data:string){
+    const guide:ArchGuideStore=data?JSON.parse(data):{version:1,patterns:[]};
+    if(guide.version!==1)throw new Error("Unsupported guide version");
+    guide.patterns??=[];
+    const before=JSON.stringify(guide);
     edit(guide);
-    writeAtomic(file, guide);
+    return JSON.stringify(guide)===before?undefined:guide;
+  }
+  const original=snapshot();
+  const proposal=changed(original);
+  if(!proposal)return;
+  ensureGraphDir(path.resolve(root));
+  withFileLock(path.join(dir,"guide.lock"),()=>{
+    const latest=snapshot();
+    const next=latest===original?proposal:changed(latest);
+    if(next)writeAtomic(file,next);
   });
 }

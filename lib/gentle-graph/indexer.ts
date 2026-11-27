@@ -1,4 +1,4 @@
-import {storedMtime} from "./store-sqlite.ts";
+import {existingBackend} from "./sqlite-backend.ts";
 import { isManifest } from "./arch-detector.ts";
 import { GitScopeError,gitDirtyFilesSync, gitInventory, gitWorkspaceInventory } from "./git-scope.ts";
 import {workerData} from "node:worker_threads";
@@ -154,7 +154,7 @@ function currentJitScope(root: string, index: GraphIndex, cached: CachedScope): 
     if (!stat || stat.mtimeMs >= cached.discoveredAt) return false;
   }
   for (const file of Object.keys(index.files)) {
-    if (fs.lstatSync(path.join(root,file), {throwIfNoEntry:false})?.mtimeMs !== (storedMtime(index,file) ?? index.files[file].mtimeMs)) return false;
+    if (fs.lstatSync(path.join(root,file), {throwIfNoEntry:false})?.mtimeMs !== (existingBackend()?.storedMtime(index,file) ?? index.files[file].mtimeMs)) return false;
   }
   return true;
 }
@@ -259,7 +259,7 @@ function discoverScope(projectRoot: string, options: boolean | { fullSync?: bool
   const guide = loadArchGuide(root);
   const patterns = new Set(guide.patterns.map(p => p.entry.split("#")[0]));
   const indexed=scope.mode==="full"?Object.keys(index.files).filter(f=>!scope.paths.has(f)):Object.keys(index.files).filter(file=>{
-    const time=storedMtime(index,file);
+    const time=existingBackend()?.storedMtime(index,file);
     return time===undefined || !scope.paths.has(file) || fs.statSync(path.join(root,file),{throwIfNoEntry:false})?.mtimeMs!==time;
   });
   const files = [...indexed, ...(scope.mode === "jit" ? [...scope.dirty, ...patterns] : knownFiles)];

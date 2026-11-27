@@ -1,4 +1,4 @@
-import {sqlArchitectureSignals,sqlCallerFiles,uniqueSqlSymbol} from "./store-sqlite.ts";
+import {sqliteBackend} from "./sqlite-backend.ts";
 import path from "node:path";
 import fs from "node:fs";
 import { detectArchitecture,type ArchitectureCache } from "./arch-detector.ts";
@@ -61,7 +61,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     }
   }
   const guide = recommendPath(resolved, index, intent, options.limit ?? 5, rules);
-  const signals = new Set<string>(sqlGuide?sqlArchitectureSignals(resolved):[]);
+  const signals = new Set<string>(sqlGuide?sqliteBackend().sqlArchitectureSignals(resolved):[]);
   for (const node of Object.values(index.files)) {
     if (node.language === "swift" && node.imports.includes("SwiftUI")) signals.add("SwiftUI");
     if (node.language === "java" && node.symbols.some(s=>["RestController","Service","Repository"].includes(s.domainTag))) signals.add("Spring Boot");
@@ -95,7 +95,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   const entryCalls=new Set(entry?.symbols.flatMap(s=>s.calls));
   if(sqlGuide)for(const mod of guide.recommendedModules.slice(0,3)){
     for(const symbol of index.files[mod.file].symbols.filter(s=>s.exported))
-      for(const file of sqlCallerFiles(resolved,symbol.name)){
+      for(const file of sqliteBackend().sqlCallerFiles(resolved,symbol.name)){
         if(!index.files[file] && scope.index.files[file])index.files[file]=scope.index.files[file];
       }
   }
@@ -126,7 +126,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     module.coordinate=symbol.name+" L"+symbol.line+"-"+symbol.endLine;
     const callers=lookup.callersByName.get(symbol.name)??[];
     const caller=callers.find(s=>s.file===entry?.path && s.file!==module.file) ?? callers.find(s=>s.file!==module.file);
-    if(caller && lookup.symbolByName.get(symbol.name)?.length===1 && (!sqlGuide || uniqueSqlSymbol(resolved,symbol.name))){
+    if(caller && lookup.symbolByName.get(symbol.name)?.length===1 && (!sqlGuide || sqliteBackend().uniqueSqlSymbol(resolved,symbol.name))){
       try {
         const lines=fs.readFileSync(path.join(resolved,caller.file),"utf8").split(/\r?\n/);
         const name=symbol.name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");

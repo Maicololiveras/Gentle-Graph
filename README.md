@@ -22,7 +22,7 @@ node --test tests/gentle-graph.test.ts
 node --input-type=module -e "import { graphInspect } from './lib/gentle-graph/index.ts'; console.log(graphInspect('syncGraphIndex'))"
 ```
 
-Cada worktree conserva su índice en `.gentle-graph/index.json` y pasa a SQLite WAL cuando supera 2000 archivos indexados. SQLite usa un esquema relacional v2, WAL y búsqueda FTS5 por ruta, etiquetas y símbolos. Puedes forzarlo con `GENTLE_GRAPH_STORE=sqlite`. Para NFS o recursos SMB montados, configura `GENTLE_GRAPH_STORE=json`; las rutas UNC usan JSON automáticamente. La migración del índice SQLite anterior es transaccional. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
+Cada worktree conserva su índice en `.gentle-graph/index.json` y pasa a SQLite WAL cuando supera 2000 archivos indexados. SQLite usa un esquema relacional v2, WAL y búsqueda FTS5 por ruta, etiquetas y símbolos. Si la base ya existe, se reutiliza también en proyectos pequeños. Para NFS o recursos SMB montados, configura `GENTLE_GRAPH_STORE=json`; las rutas UNC usan JSON automáticamente. La migración del índice SQLite anterior es transaccional. Los patrones compartidos viven en `.gentle-graph/guide.json`, que puedes versionar. Las relaciones entre símbolos y las pruebas sugeridas son heurísticas. Conviene revisar los resultados cuando haya símbolos homónimos o llamadas dinámicas.
 
 [Integrar con Gentle Shell y configurar subagentes](docs/gentle-graph-integration.md)
 

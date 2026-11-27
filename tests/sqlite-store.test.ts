@@ -23,6 +23,7 @@ it("commits eight simultaneous subprocess deltas and refreshes an existing reade
   const root=fixture(t),prior=process.env.GENTLE_GRAPH_STORE;
   process.env.GENTLE_GRAPH_STORE="sqlite";
   try{
+    fs.mkdirSync(path.join(root,".gentle-graph"));database(root).close();
     const index=loadGraphIndex(root);index.files["seed.ts"]=node("seed.ts");saveGraphIndex(root,index,new Set(["seed.ts"]));
     const reader=loadGraphIndex(root);assert.equal(Object.keys(reader.files).length,1);
     const children=Array.from({length:8},(_,i)=>fork(fileURLToPath(new URL("./sqlite-writer.mjs",import.meta.url)),[root,String(i)],{silent:true}));
@@ -105,7 +106,11 @@ it("refreshes JSON after an external replacement and reclaims an abandoned guide
   const copy=JSON.parse(fs.readFileSync(file,"utf8"));copy.files["y.ts"]=node("y.ts");
   fs.writeFileSync(file+".replacement",JSON.stringify(copy));fs.renameSync(file+".replacement",file);
   assert.ok(loadGraphIndex(root).files["y.ts"]);
-  const lock=path.join(dir,"guide.lock");fs.writeFileSync(lock,"");fs.utimesSync(lock,1,1);
+  const lock=path.join(dir,"guide.lock");
+  fs.writeFileSync(lock,String(process.pid));
+  updateArchGuide(root,()=>{});
+  assert.equal(fs.existsSync(path.join(dir,"guide.json")),false);
+  fs.writeFileSync(lock,"");fs.utimesSync(lock,1,1);
   updateArchGuide(root,g=>{g.rules=["changed"];});
   assert.deepEqual(loadArchGuide(root).rules,["changed"]);assert.ok(!fs.existsSync(lock));
 });
