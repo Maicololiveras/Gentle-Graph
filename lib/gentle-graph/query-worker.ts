@@ -4,7 +4,7 @@ import {typescript,workspaceCompiler} from "./languages/typescript.ts";
 import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,coldTrackedPaths,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
-import {syncGraphIndex,cachedScope} from "./indexer.ts";
+import {syncGraphIndex,cachedScope,SYNC_TTL_MS} from "./indexer.ts";
 import {guideFromScope,previewTrackedGuide} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
 import {impactSteps} from "./query-impact.ts";
@@ -47,6 +47,7 @@ if(initial.kind==="guide" && process.platform==="win32"){
 }
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
 let publishing:Promise<void>|undefined;
+let startPublication:(()=>void)|undefined;
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
   let state=degraded?null:prepared ? prepared[0] : await gitSnapshot(q.root,JSON.stringify([q.kind,q.term])).catch(e=>{if(!(e instanceof GitScopeError))throw e;degraded=true;return null;});
@@ -56,6 +57,7 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
   if(publishing){
+    startPublication?.();
     await publishing;
     const committed=state?.results.get(key+indexStamp(q.root));
     if(committed!==undefined)return committed;
@@ -85,7 +87,7 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   indexed=Object.keys(scope.index.files).length;
   } finally {
     if(timings)timings.query=performance.now()-started-timings.scope;
-    try{publication=flushGraphWrites(q.root,!!prepared && !!state && mode==="jit",stamp=>{
+    try{publication=flushGraphWrites(q.root,prepared && state && mode==="jit" ? SYNC_TTL_MS : 0,stamp=>{
       if(state && !partial && !degraded)state.results.set(key+stamp,{text,partial,mode,indexed});
     });}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
   }
@@ -102,15 +104,16 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
     state.results.set(publication ? cacheKey : key+indexStamp(q.root),reply);
   }
   if(publication){
-    publishing=publication.catch(error=>{
+    startPublication=publication.start;
+    publishing=publication.done.catch(error=>{
       // An unavailable disk cache does not invalidate the computed answer.
       if(initial.profileStart!==undefined)console.error("Graph cache publication failed",error.code);
-    }).finally(()=>{publishing=undefined;});
+    }).finally(()=>{publishing=undefined;startPublication=undefined;});
   }
   return reply;
 }
 parentPort.on("message",async({query,prepared,inventoryReady,degraded,close}:{close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
-  if(close){await publishing;parentPort.postMessage({drained:true});return;}
+  if(close){startPublication?.();await publishing;parentPort.postMessage({drained:true});return;}
   try {
     const received = profile ? performance.now() : 0;
     let result:Awaited<ReturnType<typeof handle>>;
