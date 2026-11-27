@@ -1,5 +1,6 @@
 import path from "node:path";
-import { Worker } from "node:worker_threads";
+import {existsSync} from "node:fs";
+import { MessageChannel, Worker } from "node:worker_threads";
 
 import {prepareColdScope,clearGitSession} from "./git-scope.ts";
 
@@ -27,7 +28,37 @@ async function dispatch(lane: Lane, query: Query): Promise<string> {
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
   const started=process.env.GENTLE_GRAPH_PROFILE==="1"?performance.now():undefined;
-  const worker = lane.worker ??= new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:{...query, profileStart:started}});
+  function startWorker() {
+    const data = {...query, profileStart:started};
+    if (process.platform !== "win32" || query.kind !== "inspect" ||
+        process.env.GENTLE_GRAPH_DISABLE_TOOLCHAINS === "1" || !existsSync(path.join(query.root,"tsconfig.json"))) {
+      return new Worker(new URL("./query-worker.ts", import.meta.url), {workerData:data});
+    }
+    const {port1,port2} = new MessageChannel();
+    const signal = new Int32Array(new SharedArrayBuffer(8));
+    const compiler = new Worker(new URL("./compiler-worker.ts", import.meta.url), {
+      workerData:{root:query.root,port:port1,signal,profile:started!==undefined},transferList:[port1]
+    });
+    const unavailable = () => {
+      Atomics.store(signal,1,1);
+      Atomics.add(signal,0,1);
+      Atomics.notify(signal,0);
+    };
+    compiler.on("error",unavailable);
+    compiler.once("exit",unavailable);
+    compiler.unref();
+    try {
+      const worker = new Worker(new URL("./query-worker.ts",import.meta.url),{
+        workerData:{...data,compiler:{port:port2,signal}},transferList:[port2]
+      });
+      worker.once("exit",()=>{void compiler.terminate();});
+      return worker;
+    } catch(error) {
+      void compiler.terminate();
+      throw error;
+    }
+  }
+  const worker = lane.worker ??= startWorker();
   return new Promise((resolve, reject) => {
     let checkpoint = "Partial impact (time budget reached)\n" + query.term;
     const timer = query.kind === "impact" ? setTimeout(() => {

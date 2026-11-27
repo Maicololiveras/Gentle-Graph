@@ -390,10 +390,16 @@ it("coalesces concurrent host queries and releases workers on shutdown", async t
   const {sessionQuery,closeQuerySessions}=await import("../lib/gentle-graph/query-session.ts");
   const root=makeTempProject();
   t.after(async()=>{await closeQuerySessions();fs.rmSync(root,{recursive:true,force:true});});
+  fs.writeFileSync(path.join(root,"tsconfig.json"),"{}");
   const q={kind:"inspect" as const,root,term:"verifyToken"};
   const first=sessionQuery(q);
   assert.equal(first,sessionQuery(q));
-  assert.match(await first,/src\/auth.ts/);
+  const result=await first;
+  assert.match(result,/src\/auth.ts/);
+  clearMemoryCache(root);
+  fs.rmSync(path.join(root,".gentle-graph"),{recursive:true,force:true});
+  const {formatInspect}=await import("../lib/gentle-graph/format.ts");
+  assert.equal(result,formatInspect(graphInspect(q.term,{projectRoot:root})));
 });
 
 it("refreshes a worker result when a dirty source is edited again", async t=>{

@@ -1,7 +1,7 @@
 import {existsSync} from "node:fs";
 import path from "node:path";
-import {workspaceCompiler} from "./languages/typescript.ts";
-import {parentPort,workerData} from "node:worker_threads";
+import {typescript,workspaceCompiler} from "./languages/typescript.ts";
+import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {syncGraphIndex} from "./indexer.ts";
 import {guideFromScope} from "./query-guide.ts";
@@ -12,11 +12,28 @@ import {formatGuide,formatInspect,formatImpact} from "./format.ts";
 import type {Query} from "./query-session.ts";
 
 // Git discovers the first worktree scope concurrently on the parent thread.
-const initial = workerData as Query & {profileStart?:number};
+const initial = workerData as Query & {profileStart?:number;compiler?:{port:MessagePort;signal:Int32Array}};
 const profile = initial.kind === "inspect" && initial.profileStart !== undefined;
 const workerReady = profile ? performance.now() : 0;
 let compilerEnd = workerReady;
-if (initial.kind !== "guide" && existsSync(path.join(initial.root, "tsconfig.json"))) {
+if (initial.compiler) {
+  const {port,signal}=initial.compiler;
+  const localParse=typescript.parse;
+  typescript.parse=(root,file,content)=>{
+    const version=Atomics.load(signal,0);
+    if (!Atomics.load(signal,1)) {
+      port.postMessage({file,content});
+      // Only the isolated graph worker waits. On a crash or timeout, resume
+      // with the same local adapter and retire the port to avoid stale replies.
+      const waited=Atomics.wait(signal,0,version,4000);
+      const reply=waited==="timed-out" ? undefined : receiveMessageOnPort(port)?.message;
+      if (reply?.parsed) return reply.parsed;
+    }
+    typescript.parse=localParse;
+    port.close();
+    return localParse(root,file,content);
+  };
+} else if (initial.kind !== "guide" && existsSync(path.join(initial.root, "tsconfig.json"))) {
   workspaceCompiler(initial.root);
   if (profile) compilerEnd = performance.now();
 }
