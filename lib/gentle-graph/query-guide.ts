@@ -1,10 +1,11 @@
+import {sqlArchitectureSignals,sqlCallerFiles,uniqueSqlSymbol} from "./store-sqlite.ts";
 import path from "node:path";
 import fs from "node:fs";
 import { detectArchitecture } from "./arch-detector.ts";
 import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
 import { graphInspect } from "./query-inspect.ts";
 import { getLookup,loadArchGuide,searchIndexedFiles } from "./store.ts";
-import { isTestFile } from "./languages/registry.ts";
+import { isTestFile,resolveImport } from "./languages/registry.ts";
 import { indexSpecificFiles, syncGraphIndex } from "./indexer.ts";
 import type { GuideRecommendation, CodeSymbol } from "./types.ts";
 /**
@@ -19,7 +20,8 @@ export function graphGuide(
   return guideFromScope(intent,options,resolved,syncGraphIndex(resolved));
 }
 export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>){
-  const { index } = scope;
+  let index = scope.index;
+  let sqlGuide=false;
   const words = tokenizeIntent(intent);
   const rules = loadArchGuide(resolved);
   if (scope.mode === "jit") {
@@ -27,7 +29,9 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     const patterns = rules.patterns;
     const referenced = new Set(patterns.flatMap(p => [p.entry.split("#")[0], ...p.files]));
     const dirty = new Set(scope.dirty);
-    const matches=new Set(searchIndexedFiles(resolved,intent));
+    const hits=searchIndexedFiles(resolved,intent);
+    sqlGuide=hits!==undefined;
+    const matches=new Set(hits);
     const ranked: { file: string; score: number }[] = [];
     for (const file of scope.knownFiles) {
       const name = file.toLowerCase();
@@ -39,11 +43,20 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       if (ranked.length > 15) ranked.pop();
     }
     indexSpecificFiles(resolved, ranked.map(row => row.file), {paths:scope.paths,preview:true});
+    if(sqlGuide){
+      const files=Object.create(null);
+      for(const {file} of ranked)if(scope.index.files[file])files[file]=scope.index.files[file];
+      index={...scope.index,files};
+    }
     const seeds=rankModules(index,words,3);
     indexSpecificFiles(resolved,seeds.map(m=>m.file),{paths:scope.paths,followImports:1,preview:true});
+    if(sqlGuide)for(const seed of seeds)for(const spec of index.files[seed.file].imports){
+      const neighbor=resolveImport(seed.file,spec,scope.paths);
+      if(neighbor && scope.index.files[neighbor])index.files[neighbor]=scope.index.files[neighbor];
+    }
   }
   const guide = recommendPath(resolved, index, intent, options.limit ?? 5, rules);
-  const signals = new Set<string>();
+  const signals = new Set<string>(sqlGuide?sqlArchitectureSignals(resolved):[]);
   for (const node of Object.values(index.files)) {
     if (node.language === "swift" && node.imports.includes("SwiftUI")) signals.add("SwiftUI");
     if (node.language === "java" && node.symbols.some(s=>["RestController","Service","Repository"].includes(s.domainTag))) signals.add("Spring Boot");
@@ -75,6 +88,12 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
   }
   const entry=index.files[guide.recommendedModules[0]?.file];
   const entryCalls=new Set(entry?.symbols.flatMap(s=>s.calls));
+  if(sqlGuide)for(const mod of guide.recommendedModules.slice(0,3)){
+    for(const symbol of index.files[mod.file].symbols.filter(s=>s.exported))
+      for(const file of sqlCallerFiles(resolved,symbol.name)){
+        if(!index.files[file] && scope.index.files[file])index.files[file]=scope.index.files[file];
+      }
+  }
   const lookup=getLookup(index);
   const neighborExports = new Set(guide.recommendedModules.slice(1,3).flatMap(m=>index.files[m.file].exports));
   const top = guide.recommendedModules.slice(0, 3);
@@ -102,7 +121,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
     module.coordinate=symbol.name+" L"+symbol.line+"-"+symbol.endLine;
     const callers=lookup.callersByName.get(symbol.name)??[];
     const caller=callers.find(s=>s.file===entry?.path && s.file!==module.file) ?? callers.find(s=>s.file!==module.file);
-    if(caller && lookup.symbolByName.get(symbol.name)?.length===1){
+    if(caller && lookup.symbolByName.get(symbol.name)?.length===1 && (!sqlGuide || uniqueSqlSymbol(resolved,symbol.name))){
       try {
         const lines=fs.readFileSync(path.join(resolved,caller.file),"utf8").split(/\r?\n/);
         const name=symbol.name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");

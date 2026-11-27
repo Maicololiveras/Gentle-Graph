@@ -71,7 +71,12 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
 parentPort.on("message",async({query,prepared,inventoryReady,degraded}:{query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   try {
     const received = profile ? performance.now() : 0;
-    const text = await handle(query,prepared,degraded);
+    let text:string;
+    try{text=await handle(query,prepared,degraded);}
+    catch(error){
+      if(!(error instanceof GitScopeError) || degraded)throw error;
+      text=await handle(query,undefined,true);
+    }
     if(profile && prepared && inventoryReady !== undefined) {
       const start = initial.profileStart!;
       console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,compilerEnd,received,end:performance.now()}));

@@ -153,8 +153,8 @@ function currentJitScope(root: string, index: GraphIndex, cached: CachedScope): 
     const stat = fs.statSync(path.join(root, folder), {throwIfNoEntry:false});
     if (!stat || stat.mtimeMs >= cached.discoveredAt) return false;
   }
-  for (const file of Object.values(index.files)) {
-    if (fs.lstatSync(path.join(root,file.path), {throwIfNoEntry:false})?.mtimeMs !== file.mtimeMs) return false;
+  for (const file of Object.keys(index.files)) {
+    if (fs.lstatSync(path.join(root,file), {throwIfNoEntry:false})?.mtimeMs !== (storedMtime(index,file) ?? index.files[file].mtimeMs)) return false;
   }
   return true;
 }

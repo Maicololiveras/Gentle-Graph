@@ -135,7 +135,7 @@ function hasSql(root:string){
   return !jsonOnly(root) && fs.existsSync(path.join(root,GRAPH_DIR,"index.sqlite"));
 }
 export function searchIndexedFiles(root:string,intent:string,limit=15){
-  return hasSql(root)?searchSqlFiles(root,intent,limit):[];
+  return hasSql(root)?searchSqlFiles(root,intent,limit):undefined;
 }
 function jsonStamp(file:string){
   const stat=fs.statSync(file,{bigint:true,throwIfNoEntry:false});

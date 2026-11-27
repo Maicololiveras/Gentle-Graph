@@ -29,7 +29,13 @@ export class GitScopeError extends Error {
 const layouts = new Map<string,GitLayout>();
 function gitFailure(root:string, args:string[], failure:GitFailure):null|string {
   if(args[0]==="grep" && (failure.status===1 || failure.code===1))return "";
-  if(failure.code==="ENOENT")return null;
+  if(failure.code==="ENOENT"){
+    let dir=path.resolve(root);
+    while(!fs.existsSync(path.join(dir,".git"))){
+      const parent=path.dirname(dir);if(parent===dir)return null;dir=parent;
+    }
+    throw new GitScopeError(args[0],false);
+  }
   // Keep the no-Git fallback explicit. A timeout, lock or corrupt index is
   // never permission to enumerate a potentially huge checkout on foot.
   if(failure.stderr?.toString().includes("not a git repository"))return null;

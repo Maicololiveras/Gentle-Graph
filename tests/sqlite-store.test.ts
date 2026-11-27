@@ -8,6 +8,8 @@ import {fork} from "node:child_process";
 import {DatabaseSync} from "node:sqlite";
 import {clearMemoryCache,loadGraphIndex,saveGraphIndex,updateArchGuide,loadArchGuide,jsonOnly,getLookup,patchLookup,invalidateLookup} from "../lib/gentle-graph/store.ts";
 import {searchSqlFiles} from "../lib/gentle-graph/store-sqlite.ts";
+import {syncGraphIndex} from "../lib/gentle-graph/indexer.ts";
+import {execFileSync} from "node:child_process";
 import {gitPaths} from "../lib/gentle-graph/git-scope.ts";
 import type {FileNode} from "../lib/gentle-graph/types.ts";
 
@@ -83,4 +85,27 @@ it("recognizes UNC paths and distinguishes missing Git worktrees from command fa
   const root=fixture(t);assert.ok(jsonOnly(String.raw`\\server\share\repo`));assert.ok(jsonOnly("//server/share/repo"));
   assert.equal((await gitPaths(root,["status"])).status,"not_git");
   assert.equal((await gitPaths(root,["invalid-gentle-graph-command"])).status,"git_error");
+});
+
+it("serves cached paths after an inventory error without indexing unlisted files",t=>{
+  const root=fixture(t);
+  fs.writeFileSync(path.join(root,"known.ts"),"export function known() {}");
+  execFileSync("git",["init","-q"],{cwd:root,windowsHide:true});
+  execFileSync("git",["add","known.ts"],{cwd:root,windowsHide:true});
+  assert.ok(syncGraphIndex(root).index.files["known.ts"]);
+  fs.writeFileSync(path.join(root,".git","index"),"broken");
+  fs.writeFileSync(path.join(root,"never-scan.ts"),"export function surprise() {}");
+  const scope=syncGraphIndex(root,true);
+  assert.equal(scope.degraded,true);assert.deepEqual(scope.knownFiles,["known.ts"]);assert.equal(scope.stats.scanned,0);
+});
+it("refreshes JSON after an external replacement and reclaims an abandoned guide lock",t=>{
+  const root=fixture(t),index=loadGraphIndex(root);
+  index.files["x.ts"]=node("x.ts");saveGraphIndex(root,index,new Set(["x.ts"]));
+  const dir=path.join(root,".gentle-graph"),file=path.join(dir,"index.json");
+  const copy=JSON.parse(fs.readFileSync(file,"utf8"));copy.files["y.ts"]=node("y.ts");
+  fs.writeFileSync(file+".replacement",JSON.stringify(copy));fs.renameSync(file+".replacement",file);
+  assert.ok(loadGraphIndex(root).files["y.ts"]);
+  const lock=path.join(dir,"guide.lock");fs.writeFileSync(lock,"");fs.utimesSync(lock,1,1);
+  updateArchGuide(root,g=>{g.rules=["changed"];});
+  assert.deepEqual(loadArchGuide(root).rules,["changed"]);assert.ok(!fs.existsSync(lock));
 });

@@ -222,3 +222,20 @@ export function searchSqlFiles(root:string,intent:string,limit=15):string[]{
   return open(root).sql("SELECT path FROM files_fts WHERE files_fts MATCH ? ORDER BY bm25(files_fts,5.0,3.0,1.0) LIMIT ?")
     .all(match,limit).map(r=>String(r.path));
 }
+
+// Keep guide ranking bounded while retaining cross-module evidence.
+export function sqlCallerFiles(root:string,name:string):string[]{
+  return open(root).sql("SELECT DISTINCT from_file FROM edges WHERE to_name=? AND kind='call' LIMIT 16").all(name).map(r=>String(r.from_file));
+}
+export function sqlArchitectureSignals(root:string):string[]{
+  const sql=`
+    SELECT 'SwiftUI' AS tag WHERE EXISTS(SELECT 1 FROM edges e JOIN files f ON f.path=e.from_file WHERE e.kind='import' AND e.to_name='SwiftUI' AND f.language='swift')
+    UNION ALL SELECT 'Spring Boot' WHERE EXISTS(SELECT 1 FROM symbols s JOIN files f ON f.path=s.file_path WHERE f.language='java' AND s.domain_tag IN ('RestController','Service','Repository'))
+    UNION ALL SELECT 'MVVM' WHERE EXISTS(SELECT 1 FROM file_values v JOIN files f ON f.path=v.file_path WHERE f.language='csharp' AND v.kind='context' AND (v.value GLOB '*VM' OR v.value GLOB '*ViewModel'))
+    UNION ALL SELECT 'DI' WHERE EXISTS(SELECT 1 FROM symbols s JOIN files f ON f.path=s.file_path WHERE f.language='csharp' AND (s.name GLOB 'AddScoped<*' OR s.name GLOB 'AddSingleton<*' OR s.name GLOB 'AddTransient<*'))
+    UNION ALL SELECT 'CQRS' WHERE EXISTS(SELECT 1 FROM edges e JOIN files f ON f.path=e.from_file WHERE f.language='csharp' AND e.kind='implements' AND e.to_name IN ('IRequestHandler','INotificationHandler'))`;
+  return open(root).sql(sql).all().map(r=>String(r.tag));
+}
+export function uniqueSqlSymbol(root:string,name:string){
+  return open(root).sql("SELECT 1 FROM symbols WHERE name=? LIMIT 2").all(name).length===1;
+}
