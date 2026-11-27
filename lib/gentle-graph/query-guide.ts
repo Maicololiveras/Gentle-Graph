@@ -1,7 +1,7 @@
 import {sqlArchitectureSignals,sqlCallerFiles,uniqueSqlSymbol} from "./store-sqlite.ts";
 import path from "node:path";
 import fs from "node:fs";
-import { detectArchitecture } from "./arch-detector.ts";
+import { detectArchitecture,type ArchitectureCache } from "./arch-detector.ts";
 import { rankModules, recommendPath, tokenizeIntent, isFixturePath } from "./arch-guide.ts";
 import { graphInspect } from "./query-inspect.ts";
 import { getLookup,loadArchGuide,searchIndexedFiles,saveGraphIndex } from "./store.ts";
@@ -19,7 +19,7 @@ export function graphGuide(
   const resolved = path.resolve(options.projectRoot ?? process.cwd());
   return guideFromScope(intent,options,resolved,syncGraphIndex(resolved));
 }
-export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>){
+export function guideFromScope(intent:string,options:{limit?:number;includeSnippets?:boolean},resolved:string,scope:ReturnType<typeof syncGraphIndex>,profileCache?:ArchitectureCache){
   let index = scope.index;
   let sqlGuide=false;
   const words = tokenizeIntent(intent);
@@ -72,7 +72,7 @@ export function guideFromScope(intent:string,options:{limit?:number;includeSnipp
       if (symbol.contracts?.some(c => /^(?:IRequestHandler|INotificationHandler)$/.test(c))) signals.add("CQRS");
     }
   }
-  const profile = detectArchitecture(resolved, scope.knownFiles, scope.manifests, [...signals].sort());
+  const profile = detectArchitecture(resolved, scope.knownFiles, scope.manifests, [...signals].sort(),profileCache);
   const labels = profile.architectures.join(" + ");
   if (labels || profile.frameworks.length) {
     guide.architecture = [labels, profile.frameworks.length ? "(" + profile.frameworks.join(", ") + ")" : ""].filter(Boolean).join(" ");

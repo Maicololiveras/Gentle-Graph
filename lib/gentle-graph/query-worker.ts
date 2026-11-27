@@ -39,6 +39,7 @@ if (initial.compiler) {
   if (profile) compilerEnd = performance.now();
 }
 
+const profileCache={};
 type Prepared = [GitSnapshot | null, Awaited<ReturnType<typeof gitSessionInventory>>];
 async function handle(q:Query,prepared?:Prepared,degraded=false){
   const deadline=performance.now()+1450;
@@ -54,7 +55,7 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   try {
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
   if(q.kind==="guide"){
-    text=formatGuide(guideFromScope(q.term,q,q.root,scope));
+    text=formatGuide(guideFromScope(q.term,q,q.root,scope,profileCache));
   } else if(q.kind==="inspect"){
     text=formatInspect(await runAsync(q.root,inspectSteps(q.term,q,q.root,scope),state));
   } else {
