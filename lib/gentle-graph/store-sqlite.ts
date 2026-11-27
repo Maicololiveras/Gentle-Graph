@@ -1,4 +1,5 @@
 import {createRequire} from "node:module";
+import {SQL_FILE_THRESHOLD} from "./sqlite-backend.ts";
 import fs from "node:fs";
 import path from "node:path";
 import type {DatabaseSync, StatementSync} from "node:sqlite";
@@ -85,9 +86,10 @@ function put(s:Store,f:FileNode){
 }
 function version(s:Store){return Number(s.sql("PRAGMA user_version").get().user_version);}
 function supported(n:number){if(n>SCHEMA_VERSION)throw new Error("Unsupported future Gentle Graph SQLite schema "+n);}
-function open(root:string){
+function open(root:string,canCreate=false){
   const cached=sessions.get(root);
   if(cached)return cached;
+  if(!canCreate && !fs.existsSync(path.join(root,".gentle-graph","index.sqlite")))throw new Error("SQLite index does not exist");
   const {DatabaseSync}=require("node:sqlite") as typeof import("node:sqlite");
   const s=new Store(new DatabaseSync(path.join(root,".gentle-graph","index.sqlite")));
   try{
@@ -200,7 +202,7 @@ export function refreshSqlIndex(root:string,index:GraphIndex){
   }catch(error){s.db.exec("ROLLBACK");throw error;}
 }
 export function writeSqlIndex(root:string,index:GraphIndex,changed:Set<string>,promote:boolean){
-  const s=open(root);
+  const s=open(root,promote && Object.keys(index.files).length>SQL_FILE_THRESHOLD);
   s.transaction(()=>{
     supported(version(s));
     const first=promote && !s.sql("SELECT version FROM metadata LIMIT 1").get();
@@ -217,7 +219,7 @@ export function writeSqlIndex(root:string,index:GraphIndex,changed:Set<string>,p
 }
 export function searchSqlFiles(root:string,intent:string,limit=15):string[]{
   const words=intent.match(/[\p{L}\p{N}_]+/gu);
-  if(!words?.length)return [];
+  if(!words?.length || !fs.existsSync(path.join(root,".gentle-graph","index.sqlite")))return [];
   const match=words.map(w=>'"'+w+'"*').join(" OR ");
   return open(root).sql("SELECT path FROM files_fts WHERE files_fts MATCH ? ORDER BY bm25(files_fts,5.0,3.0,1.0) LIMIT ?")
     .all(match,limit).map(r=>String(r.path));

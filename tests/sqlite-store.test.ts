@@ -68,7 +68,14 @@ it("leaves a newer database and its sentinel untouched",t=>{
 });
 it("ranks normalized FTS rows directly over 2200 files in under 10 ms",t=>{
   const root=fixture(t),index=loadGraphIndex(root);
-  for(let i=0;i<2200;i++){const file=i+".ts";index.files[file]=node(file,i===2000?"NeedleFunction":"ordinary");}
+  for(let i=0;i<2000;i++){const file=i+".ts";index.files[file]=node(file);}
+  saveGraphIndex(root,index,new Set(Object.keys(index.files)));
+  assert.deepEqual(searchSqlFiles(root,"notPresent"),[]);
+  assert.ok(!fs.existsSync(path.join(root,".gentle-graph/index.sqlite")));
+  index.files["2000.ts"]=node("2000.ts","NeedleFunction");
+  saveGraphIndex(root,index,new Set(["2000.ts"]));
+  assert.ok(fs.existsSync(path.join(root,".gentle-graph/index.sqlite")));
+  for(let i=2001;i<2200;i++){const file=i+".ts";index.files[file]=node(file);}
   saveGraphIndex(root,index,new Set(Object.keys(index.files)));
   const start=performance.now();const hits=searchSqlFiles(root,"NeedleFunction");const ms=performance.now()-start;
   assert.deepEqual(hits,["2000.ts"]);t.diagnostic("FTS5: "+ms.toFixed(3)+" ms");assert.ok(ms<10,String(ms));

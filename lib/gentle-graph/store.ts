@@ -1,5 +1,5 @@
 import { resolveImport } from "./languages/registry.ts";
-import {existingBackend,sqliteBackend} from "./sqlite-backend.ts";
+import {existingBackend,sqliteBackend,SQL_FILE_THRESHOLD} from "./sqlite-backend.ts";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -224,7 +224,7 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   // A hard link installs complete bytes exclusively. Contending creators
   // merge their deltas under the regular lock when the destination exists.
   if(stamps.get(root)==="absent" && !jsonOnly(root) &&
-      Object.keys(index.files).length<=2000 && !fs.existsSync(file)){
+      Object.keys(index.files).length<=SQL_FILE_THRESHOLD && !fs.existsSync(file)){
     const tmp=file+"."+randomUUID()+".tmp";
     try{
       fs.writeFileSync(tmp,JSON.stringify(index));
@@ -248,7 +248,7 @@ function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
       next={...index,files:{...disk.files}};
       for(const f of changed){if(index.files[f])next.files[f]=index.files[f];else delete next.files[f];}
     }
-    if(!jsonOnly(root) && Object.keys(next.files).length>2000){
+    if(!jsonOnly(root) && Object.keys(next.files).length>SQL_FILE_THRESHOLD){
       sqliteBackend().writeSqlIndex(root,next,changed,true);
       fs.rmSync(file,{force:true});
       stamps.delete(root);
