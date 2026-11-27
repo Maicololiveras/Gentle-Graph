@@ -195,13 +195,47 @@ function withFileLock<T>(file:string,work:()=>T):T{
     finally{fs.closeSync(fd);fs.rmSync(file,{force:true});}
   }
 }
+// Host queries are serialized per root. Combine intermediate frontier updates
+// into a single durable write before the host receives the result.
+const pendingWrites=new Map<string,{index?:GraphIndex;files:Set<string>}>();
+export function beginGraphWrites(root:string){pendingWrites.set(root,{files:new Set()});}
+export function flushGraphWrites(root:string){
+  const batch=pendingWrites.get(root);
+  pendingWrites.delete(root);
+  if(batch?.index && batch.files.size)persistIndex(root,batch.index,batch.files);
+}
 export function saveGraphIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
+  const batch=pendingWrites.get(projectRoot);
+  if(!batch){persistIndex(projectRoot,index,changed);return;}
+  if(batch.index && batch.index!==index)persistIndex(projectRoot,batch.index,batch.files);
+  if(batch.index!==index)batch.files.clear();
+  batch.index=index;
+  for(const file of changed)batch.files.add(file);
+}
+function persistIndex(projectRoot:string,index:GraphIndex,changed:Set<string>){
   const root=path.resolve(projectRoot),dir=ensureGraphDir(root),file=path.join(dir,INDEX_FILE);
   index.projectRoot=root;index.updatedAt=new Date().toISOString();
   // Retain the version observed before our write. A concurrent commit is then
   // detected on the next read, even when it landed just before this transaction.
   if(hasSql(root) && !fs.existsSync(file)){
     writeSqlIndex(root,index,changed,false);return;
+  }
+  // Publish the first JSON snapshot without allocating a second lock file.
+  // A hard link installs complete bytes exclusively. Contending creators
+  // merge their deltas under the regular lock when the destination exists.
+  if(stamps.get(root)==="absent" && !jsonOnly(root) && process.env.GENTLE_GRAPH_STORE!=="sqlite" &&
+      Object.keys(index.files).length<=2000 && !fs.existsSync(file)){
+    const tmp=file+"."+randomUUID()+".tmp";
+    try{
+      fs.writeFileSync(tmp,JSON.stringify(index));
+      const published=jsonStamp(tmp);
+      fs.linkSync(tmp,file);
+      if(!hasSql(root) && !fs.existsSync(path.join(dir,"index.lock"))){
+        memoryIndexCache.set(root,index);stamps.set(root,published);return;
+      }
+    }catch(error){
+      if(!["EEXIST","EPERM","ENOTSUP","EOPNOTSUPP","EXDEV","EACCES","ENOSYS"].includes(error.code))throw error;
+    }finally{fs.rmSync(tmp,{force:true});}
   }
   withFileLock(path.join(dir,"index.lock"),()=>{
     if(hasSql(root)){

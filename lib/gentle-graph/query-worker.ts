@@ -3,7 +3,7 @@ import path from "node:path";
 import {typescript,workspaceCompiler} from "./languages/typescript.ts";
 import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,GitScopeError,type GitSnapshot} from "./git-scope.ts";
-import {indexStamp} from "./store.ts";
+import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
 import {syncGraphIndex,cachedScope} from "./indexer.ts";
 import {guideFromScope} from "./query-guide.ts";
 import {inspectSteps} from "./query-inspect.ts";
@@ -49,8 +49,10 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const cached=state?.results.get(cacheKey);
   if(cached!==undefined)return cached;
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
+  let text:string,partial=false;
+  beginGraphWrites(q.root);
+  try {
   const scope=degraded?cachedScope(q.root):syncGraphIndex(q.root,{inventory,dirty:state?.dirty,refresh:true});
-  let text:string;
   if(q.kind==="guide"){
     text=formatGuide(guideFromScope(q.term,q,q.root,scope));
   } else if(q.kind==="inspect"){
@@ -60,9 +62,12 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
     const result=await runAsync(q.root,impactSteps(q.term,{},q.root,scope,deadline,partial=>
       parentPort.postMessage({checkpoint:formatImpact(partial)})),state,deadline,prefetch);
     text=formatImpact(result);
-    if(result.partial || degraded)return text;
+    partial=!!result.partial;
   }
-  if(state){
+  } finally {
+    try{flushGraphWrites(q.root);}catch(e){if(!["EROFS","EACCES","EPERM"].includes(e.code))throw e;}
+  }
+  if(state && !partial && !degraded){
     if(state.results.size>=64)state.results.delete(state.results.keys().next().value);
     state.results.set(key+indexStamp(q.root),text);
   }
