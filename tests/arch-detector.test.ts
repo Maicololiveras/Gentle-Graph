@@ -85,3 +85,20 @@ it("detects Spring Boot, Rails, Laravel and Symfony from scoped manifests", () =
     for(const name of ["Spring Boot","Laravel","Symfony","Rails"]) assert(guide.architecture.includes(name),name);
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
+
+it("detects SvelteKit from its manifest, keeps routes apart from lib, and skips the UI label", t => {
+  const opts = solution(t, {"package.json":JSON.stringify({devDependencies:{"@sveltejs/kit":"*","svelte":"*"}}),
+    "src/routes/+page.svelte":"<h1>Home</h1>",
+    "src/routes/+layout.svelte":"<nav/>",
+    "src/lib/Card.svelte":"<article/>",
+    "src/lib/stores/counter.ts":"export const count = 0;",
+    "src/lib/components/Button.svelte":"<button/>",
+    "src/lib/hooks/useThing.ts":"export const thing = 1;"});
+  const files = ["src/routes/+page.svelte","src/routes/+layout.svelte","src/lib/Card.svelte",
+    "src/lib/stores/counter.ts","src/lib/components/Button.svelte","src/lib/hooks/useThing.ts"];
+  const profile = detectArchitecture(opts.projectRoot, files, ["package.json"]);
+  assert.ok(profile.architectures.includes("SvelteKit"), "SvelteKit architecture");
+  assert.ok(profile.frameworks.includes("SvelteKit"), "SvelteKit framework signal");
+  assert.ok(profile.boundaries.some(b => /routes.*lib/i.test(b)), "routes must not import lib internals from pages? boundary recorded");
+  assert.ok(!profile.architectures.includes("Component UI"), "SvelteKit folders must not emit the generic Component UI label");
+});

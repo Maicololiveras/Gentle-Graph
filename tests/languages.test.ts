@@ -8,6 +8,10 @@ import { graphGuide, graphImpact, graphInspect } from "../lib/gentle-graph/index
 import { loadGraphIndex, clearMemoryCache } from "../lib/gentle-graph/store.ts";
 import { isTestFile, parseSourceFile } from "../lib/gentle-graph/languages/registry.ts";
 
+// The Svelte adapter has its own suite; loading it here keeps `npm test` running
+// it without editing package.json, the same way sqlite-store.test.ts is loaded.
+import "./svelte.test.ts";
+
 function project(t: TestContext, files: Record<string, string>) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gentle-languages-"));
   t.after(() => { clearMemoryCache(root); fs.rmSync(root, { recursive: true, force: true }); });
@@ -269,18 +273,6 @@ for (const fixture of [
   assert(parsed.symbols.some(s=>s.name==="Db.run" && s.calls.includes("write")));
   assert(isTestFile(fixture.test));
 });
-it("SvelteKit links component use and script imports through $lib",async t=>{
-  const opts=project(t,{"src/routes/+page.svelte":'<script lang="ts">\nimport Card from "$lib/Card.svelte";\nexport function loadData() { return fetchData(); }\n</script>\n<Card />',
-    "src/lib/Card.svelte":"<article>Card</article>", "src/routes/+page.server.ts":"export function load() {}"});
-  const page=graphInspect("src/routes/+page.svelte#+page",opts)[0];
-  assert(page.callees.some(c=>c.name==="Card"));
-  assert.deepEqual(page.implementations,[]);
-  assert(graphGuide("page",opts).architecture.includes("SvelteKit"));
-  const {resolveImport}=await import("../lib/gentle-graph/languages/registry.ts");
-  assert.equal(resolveImport(page.symbol.file,"$lib/Card.svelte",new Set(["src/lib/Card.svelte"])),"src/lib/Card.svelte");
-  assert(isTestFile("component.test.svelte"));
-});
-
 for (const fixture of [
   {ext:"cpp",port:"class Port {\npublic:\n virtual int read() = 0;\n};",impl:'#include "port.h"\nnamespace demo {\nclass Db : public Port {\n int run() { return load(); }\n};\n}',consumer:"class Client {\n Port* port;\n};",test:"db_test.cpp"},
   {ext:"kt",port:"interface Port {}",impl:"package sample\nimport demo.Port\nclass Db(val id: Int) : Port {\n fun run() { load() }\n}",consumer:"class Client(val port: Port) {}",test:"DbTest.kt"},
