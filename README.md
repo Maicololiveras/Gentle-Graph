@@ -60,3 +60,14 @@ TS/JS impact analysis follows relative imports and re-exports. Other adapters ca
 | `.gentle-graph/guide.json` | Human-readable reuse patterns. Commit this file to share decisions with the team. |
 
 Set `GENTLE_GRAPH_STORE=json` for NFS or mounted SMB storage. UNC paths select JSON automatically. Set `GENTLE_GRAPH_TRUST_WORKSPACE_TYPESCRIPT=1` to allow the compiler from a trusted workspace, or `GENTLE_GRAPH_DISABLE_TOOLCHAINS=1` to use lexical parsing only.
+
+### Audit adoption and latency
+
+Every graph result carries per-call metadata in `details.gentleGraph`. The model sees the same compact text. Set `GENTLE_GRAPH_TELEMETRY=1` to also keep local JSONL in each queried worktree. The A/B trace and ABC benchmark environments enable recording automatically. A background writer drains at session shutdown, serializes writers across processes, and rotates at 5 MiB to `.gentle-graph/telemetry.prev.jsonl`. Ignore both logs in the host repository. Logs contain local paths and identifiers; query text, snippets and exception messages are omitted.
+
+```sh
+node scripts/audit-gentle-graph.mjs /path/to/gentle-agents/sessions --out ./graph-audit
+node scripts/bench-telemetry.mjs
+```
+
+The audit emits JSON to stdout and writes `audit.json` and `audit.md` with `--out`. It joins Pi session IDs and tool call IDs across transcripts, result details and active/rotated logs. Use repeatable `--telemetry <file>` for archived worktrees. Copy logs before deleting a disposable worktree. Child roles are joined from Gentle Shell's sibling `tasks/*.json` by session path. A launcher that knows a child's role can also set `GENTLE_GRAPH_ACTOR_ROLE`. Missing roles or parent-call evidence remain unknown. Registered tools alone do not imply use. A warm worker can miss the query cache. Root comparisons require a session cwd and may differ for explicit projectRoot overrides. Scope stays null until scoped queries are implemented.

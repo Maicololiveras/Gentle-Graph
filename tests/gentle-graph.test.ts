@@ -591,7 +591,7 @@ it("gives impact its full work budget after startup and labels a missing checkpo
     assert.ok(engineMs >= workMs && bootMs >= 0 && workMs >= 0);
     assert.deepEqual(reply, {
       text:"Partial impact (time budget reached before first checkpoint)",
-      mode:"unknown", indexed:null, partial:true
+      mode:"unknown", indexed:null, partial:true, cacheHit:null
     });
   } finally {
     t.mock.timers.reset();
@@ -616,7 +616,9 @@ it("reports cold query telemetry and finds an untracked consumer in a fresh work
     assert.ok(first.bootMs > 0 && first.workMs >= 0 && first.engineMs >= first.bootMs + first.workMs);
     assert.equal(warm.bootMs, 0);
     assert.ok(warm.workMs >= 0 && warm.engineMs >= warm.workMs);
-    assert.deepEqual({...warm, engineMs:first.engineMs, workMs:first.workMs, bootMs:first.bootMs}, first);
+    assert.equal(first.cacheHit,false);
+    assert.equal(warm.cacheHit,true);
+    assert.deepEqual({...warm, cacheHit:first.cacheHit, engineMs:first.engineMs, workMs:first.workMs, bootMs:first.bootMs}, first);
   }finally{await closeQuerySessions();}
   const persisted=JSON.parse(fs.readFileSync(path.join(root,".gentle-graph/index.json"),"utf8"));
   assert.ok(persisted.files["extra.test.ts"]);

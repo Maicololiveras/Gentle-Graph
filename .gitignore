@@ -5,3 +5,5 @@ node_modules/
 
 .gentle-graph/*.lock
 .gentle-graph/*.lock.reap
+.gentle-graph/telemetry.jsonl
+.gentle-graph/telemetry.prev.jsonl

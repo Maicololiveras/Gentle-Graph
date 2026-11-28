@@ -173,7 +173,7 @@ export function loadGraphIndex(projectRoot:string):GraphIndex{
   memoryIndexCache.set(root,index);stamps.set(root,stamp);return index;
 }
 const sleep=new Int32Array(new SharedArrayBuffer(4));
-function withFileLock<T>(file:string,work:()=>T):T{
+export function withFileLock<T>(file:string,work:()=>T):T{
   const limit=Date.now()+15000;
 
   for(;;){
