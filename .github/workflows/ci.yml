@@ -17,6 +17,17 @@ jobs:
       - uses: ./.github/actions/graph-ci
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Verify automatic TypeScript test discovery
+        shell: bash
+        run: |
+          set -eu -o pipefail
+          smoke=tests/_smoke-discovery.test.ts
+          test ! -e "$smoke"
+          trap 'rm -f "$smoke"' EXIT
+          export DISCOVERY_MARKER="$RUNNER_TEMP/discovery-marker"
+          echo 'import { test } from "node:test"; import { appendFileSync } from "node:fs"; test("temporary discovery smoke", () => appendFileSync(process.env.DISCOVERY_MARKER!, "1"));' > "$smoke"
+          pnpm test
+          test "$(cat "$DISCOVERY_MARKER")" = 1
       - run: node --test tests/bench-abc.test.mjs
   jit:
     strategy:

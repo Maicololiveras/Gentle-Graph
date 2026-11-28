@@ -10,8 +10,10 @@ npm install --no-save --package-lock=false --ignore-scripts --no-audit --no-fund
 
 1. Implement `LanguageAdapter` in `lib/gentle-graph/languages/<language>.ts`. Preserve file paths, symbol names and source lines. Reuse helpers from `lexer-core.ts` and implement `resolveRelativeImport` where applicable.
 2. Register extensions and test-file conventions in `languages/registry.ts` so full and JIT indexing agree. Add architecture evidence in `arch-detector.ts` if the ecosystem needs it.
-3. In `tests/languages.test.ts`, add a realistic contract, implementation and consumer. Assert the implementation and the consumer are classified separately. Check positive and negative matches and the adapter's `isTestFile` conventions.
+3. Extend `tests/languages.test.ts` or create `tests/<language>.test.ts`. Add a realistic contract, implementation and consumer. Assert the implementation and the consumer are classified separately. Check positive and negative matches and the adapter's `isTestFile` conventions.
 4. Keep parsing in the adapter and query behavior in `query-guide.ts`, `query-inspect.ts` or `query-impact.ts`. Preserve the public API of `index.ts`.
+
+`pnpm test` discovers every top-level `tests/*.test.ts` file automatically. Each suite runs once without an import from another suite or an edit to `package.json`.
 
 ## Linux and Windows conventions
 

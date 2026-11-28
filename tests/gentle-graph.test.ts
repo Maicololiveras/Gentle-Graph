@@ -549,8 +549,6 @@ it("keeps Go package-private transitive callers inside their package", t=>{
   assert.ok(!result.transitiveCallers.some(s=>s.name==="Detached"));
   assert.ok(!loadGraphIndex(root).files["other/noise.go"]);
 });
-import "./sqlite-store.test.ts";
-
 
 it("keeps the guide direct and hides secondary declarations only alongside codemode",async()=>{
   const {default:register}=await import("../extensions/gentle-graph.ts");
