@@ -311,3 +311,42 @@ it("follows C and C++ local headers and locates an out-of-class method", async t
   assert(graphInspect("check",opts)[0].callees.some(s=>s.name==="work"));
   assert(isTestFile("src/check_test.c"));
 });
+
+it("classifies paths without loading adapters and indexes languages on demand", t => {
+  const {projectRoot} = project(t, {"service.ts":"export function service() { return 42; }"});
+  const registry = new URL("../lib/gentle-graph/languages/registry.ts", import.meta.url);
+  const indexer = new URL("../lib/gentle-graph/indexer.ts", import.meta.url);
+  const script = `
+    import assert from "node:assert/strict";
+    import {sourceExtensions, isIndexableFile, isTestFile, loadedLanguageAdapters, parseSourceFile} from ${JSON.stringify(registry.href)};
+    import {syncGraphIndex} from ${JSON.stringify(indexer.href)};
+    for (const ext of sourceExtensions) assert.ok(isIndexableFile("demo" + ext));
+    assert.ok(isTestFile("OrderTests.cs"));
+    assert.deepEqual(loadedLanguageAdapters(), []);
+    const root = process.argv[1];
+    const {index} = syncGraphIndex(root);
+    assert.ok(index.files["service.ts"]);
+    assert.deepEqual(loadedLanguageAdapters(), ["typescript"]);
+    parseSourceFile(root, "Order.cs", "public class Order {}");
+    assert.deepEqual(loadedLanguageAdapters(), ["typescript", "csharp"]);
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "-e", script, projectRoot], {windowsHide:true});
+});
+
+it("indexes BOM and CRLF sources at their original lines in Unicode paths", t => {
+  const file = "Vistas de José/Órdenes.xaml";
+  const view = '<Window x:Class="App.Orders">\r\n<Button Command="{Binding SaveCommand}"/>\r\n</Window>';
+  const cs = "using App.Services;\r\nnamespace App.Views;\r\npublic class Orders {}";
+  const {projectRoot} = project(t, {[file]:"\uFEFF"+view, "Orders.cs":"\uFEFF"+cs, "empty.ts":""});
+  for (const [name, source] of [[file,view],["Orders.cs",cs],["empty.ts",""]]) {
+    const parsed = parseSourceFile(projectRoot,name,fs.readFileSync(path.join(projectRoot,name),"utf8"));
+    assert.deepEqual(parsed,parseSourceFile(projectRoot,name,source));
+  }
+  const result = graphImpact("SaveCommand",{projectRoot});
+  const index = loadGraphIndex(projectRoot);
+  assert.ok(result && index.files[file] && index.files["empty.ts"]);
+  assert.ok(index.files["Orders.cs"].imports.includes("App.Services"));
+  const symbol = index.files[file].symbols.find(symbol => symbol.name === "Orders");
+  assert.equal(symbol?.line, 1);
+  assert.ok(symbol.sites?.some(site => site.target === "SaveCommand" && site.line === 2));
+});

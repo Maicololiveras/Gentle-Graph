@@ -13,11 +13,17 @@ export interface Query {
   includeSnippets?: boolean;
 }
 
-export interface QueryReply {
+interface WorkerReply {
   text:string;
   mode:string;
   indexed:number|null;
   partial:boolean;
+}
+
+export interface QueryReply extends WorkerReply {
+  engineMs: number;
+  bootMs: number;
+  workMs: number;
 }
 
 interface Lane {
@@ -34,7 +40,7 @@ const IMPACT_BUDGET_MS = 1500;
 let nextQueryId = 0;
 const lanes = new Map<string, Lane>();
 
-async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
+async function dispatch(lane: Lane, query: Query, requestedAt: number): Promise<QueryReply> {
   await lane.stopping;
   if (lane.closed) throw new Error("Graph session has ended");
   const cold = !lane.worker;
@@ -70,15 +76,18 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       throw error;
     }
   }
+  const bootStarted = performance.now();
   const worker = lane.worker ??= startWorker();
   return new Promise((resolve, reject) => {
+    let bootMs = 0;
+    let workStarted: number;
     const queryId = ++nextQueryId;
     let checkpoint = "Partial impact (time budget reached before first checkpoint)";
     let workTimer: ReturnType<typeof setTimeout>;
     const bootTimer = cold ? setTimeout(() => {
       retire();
       reject(new Error("Graph worker did not become ready within 10 seconds"));
-    }, WORKER_BOOT_TIMEOUT_MS) : undefined;
+    }, WORKER_BOOT_TIMEOUT_MS).unref() : undefined;
 
     function retire() {
       finish();
@@ -86,8 +95,13 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       lane.stopping = worker.terminate();
     }
 
-    function partialReply(): QueryReply {
+    function partialReply(): WorkerReply {
       return {text:checkpoint,mode:"unknown",indexed:null,partial:true};
+    }
+
+    function complete(reply: WorkerReply) {
+      const end = performance.now();
+      resolve({...reply, engineMs:end - requestedAt, bootMs, workMs:end - workStarted});
     }
 
     function finish() {
@@ -107,26 +121,29 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
 
     function exit(code: number) { error(new Error("Graph worker exited (" + code + ")")); }
 
-    function message(reply: {ready?: boolean; started?: number; result?: QueryReply; error?: string; checkpoint?: string; timedOut?: boolean}) {
+    function message(reply: {ready?: boolean; started?: number; result?: WorkerReply; error?: string; checkpoint?: string; timedOut?: boolean}) {
       if (reply.ready) {
+        if (cold) bootMs = performance.now() - bootStarted;
         clearTimeout(bootTimer);
         return;
       }
       if (reply.started !== undefined) {
-        if (reply.started === queryId && query.kind === "impact" && !workTimer) {
+        if (reply.started !== queryId || workStarted !== undefined) return;
+        workStarted = performance.now();
+        if (query.kind === "impact") {
           workTimer = setTimeout(() => {
             retire();
-            resolve(partialReply());
-          }, IMPACT_BUDGET_MS);
+            complete(partialReply());
+          }, IMPACT_BUDGET_MS).unref();
         }
         return;
       }
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"reply",kind:query.kind,cold,ms:performance.now()-started}));
       finish();
-      if (reply.timedOut) resolve(partialReply());
+      if (reply.timedOut) complete(partialReply());
       else if (reply.error) reject(new Error(reply.error));
-      else resolve(reply.result);
+      else complete(reply.result);
     }
 
     worker.ref();
@@ -159,7 +176,8 @@ export function sessionQueryDetails(input: Query): Promise<QueryReply> {
   const key = JSON.stringify(query);
   const active = lane.pending.get(key);
   if (active) return active;
-  const result = lane.tail.catch(() => {}).then(() => dispatch(lane, query));
+  const requestedAt = performance.now();
+  const result = lane.tail.catch(() => {}).then(() => dispatch(lane, query, requestedAt));
   lane.pending.set(key, result);
   lane.tail = result;
   const cleanup = () => lane.pending.delete(key);
