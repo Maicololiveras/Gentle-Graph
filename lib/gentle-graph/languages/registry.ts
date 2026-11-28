@@ -21,6 +21,8 @@ for (const adapter of [typescript, python, go, rust, csharp, xaml, java, php, ru
 export const sourceExtensions = [...adapters.keys()];
 
 export function adapterFor(file: string) {
+  // Runes modules (`foo.svelte.ts`) end in `.ts` but belong to Svelte semantics.
+  if (/\.svelte\.[cm]?[jt]s$/i.test(file)) return svelte;
   return adapters.get(path.posix.extname(file).toLowerCase());
 }
 export function isIndexableFile(file: string) {

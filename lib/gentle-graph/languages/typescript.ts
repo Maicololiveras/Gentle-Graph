@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { findBraceBlockEnd, sourceFile } from "./lexer-core.ts";
+import { routeFileNamespace } from "./svelte.ts";
 import type { LanguageAdapter } from "./types.ts";
 import type { SymbolKind } from "../types.ts";
 
@@ -91,8 +92,12 @@ export const typescript: LanguageAdapter = {
   },
   parse(root, file, content) {
     const ts = workspaceCompiler(root);
-    if (!ts) return lexicalTS(file, content);
-    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, false);
+    const route = routeFileNamespace(file);
+    if (!ts) {
+      const lexical = lexicalTS(file, content);
+      if (route) lexical.namespace = route;
+      return lexical;
+    }    const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, false);
     const { result, add } = sourceFile(file, content, language(file));
     const locals=new Set<string>(), imports=new Set<string>();
     for(const declaration of sf.statements){
@@ -146,6 +151,13 @@ export const typescript: LanguageAdapter = {
       else if (ts.isTypeAliasDeclaration(n)) record(n, name, "type", exp, false);
       else if (ts.isVariableStatement(n)) for (const d of n.declarationList.declarations)
         if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) record(n, d.name.getText(sf), "const", exp);
+    }
+    // A SvelteKit server module belongs to its route even though it is plain TS.
+    // Declaring the route as a symbol makes one route resolve to every file that
+    // implements it (page, layout, server) instead of three unrelated files.
+    if (route) {
+      result.namespace = route;
+      add(route, "class", 0, sf.getLineAndCharacterOfPosition(sf.end).line, true, []);
     }
     return result;
   }

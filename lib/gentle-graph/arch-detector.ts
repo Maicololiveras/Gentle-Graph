@@ -113,14 +113,18 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
     [/^ReactiveUI(?:\.|$)/i,"ReactiveUI"], [/^Caliburn\.Micro/i,"Caliburn.Micro"],
     [/^MediatR(?:\.|$)/i,"MediatR"], [/EntityFrameworkCore/i,"EntityFrameworkCore"],
     [/^react$/,"React"], [/^next$/,"Next.js"], [/^@angular\/core$/,"Angular"],
-    [/^@nestjs\/core$/,"NestJS"], [/^FastAPI$/i,"FastAPI"], [/^Django$/i,"Django"]
+    [/^@nestjs\/core$/,"NestJS"], [/^@sveltejs\/kit$/,"SvelteKit"], [/^svelte$/,"Svelte"], [/^FastAPI$/i,"FastAPI"], [/^Django$/i,"Django"]
   ] as const) if ([...packages].some(pkg => pattern.test(pkg))) profile.frameworks.push(label);
   for (const name of ["Spring Boot","Laravel","Symfony","Rails","Ktor","Android","SwiftUI","Flutter","BLoC","Riverpod"]) if(packages.has(name)) profile.frameworks.push(name);
   if (signals.includes("SwiftUI") && !profile.frameworks.includes("SwiftUI")) profile.frameworks.push("SwiftUI");
   if (profile.frameworks.includes("SwiftUI") && /ViewModel\.swift$/im.test(inventory)) arch.push("SwiftUI MVVM");
   if (packages.has("Android") && /ViewModel\.kt$/im.test(inventory)) arch.push("Android MVVM");
   if (signals.includes("Spring Boot") && !profile.frameworks.includes("Spring Boot")) profile.frameworks.push("Spring Boot");
-  if (/(?:^|\/)routes\/(?:[^\n]*\/)?\+(?:page(?:\.server\.ts|\.svelte)|layout\.svelte)$/m.test(inventory)) arch.push("SvelteKit");
+  if (/(?:^|\/)routes\/(?:[^\n]*\/)?\+(?:page(?:\.server\.ts|\.svelte)|\.svelte|layout\.svelte|server\.ts|error\.svelte)$/m.test(inventory) || profile.frameworks.includes("SvelteKit")) arch.push("SvelteKit");
+  // SvelteKit owns the routes/lib split; a `components` + `hooks`/`stores` layout
+  // inside src/lib is the framework's own shape, not the generic UI label.
+  const svelteKit = profile.frameworks.includes("SvelteKit");
+  if (svelteKit) profile.boundaries.push("src/routes compone la app; src/lib guarda módulos reutilizables y no debe importar desde src/routes");
   if (/\.xaml$/im.test(inventory)) {
     if (has("viewmodel","viewmodels") || signals.includes("MVVM") || /(?:VM|ViewModel)\.cs$/m.test(inventory)) arch.push("WPF MVVM");
     else if (has("presenters")) arch.push("WPF MVP");
@@ -132,7 +136,7 @@ export function detectArchitecture(root: string, knownFiles: string[], manifests
   const webEvidence = profile.frameworks.includes("NestJS") || contents.some(m => /Microsoft\.NET\.Sdk\.Web|Microsoft\.AspNetCore\.Mvc/i.test(m.text));
   if (has("controllers") && has("services") && (!/\.xaml$/im.test(inventory) || webEvidence)) arch.push(profile.frameworks.includes("NestJS") ? "NestJS Modules" : "MVC");
   if (["pages","widgets","features","entities","shared"].every(d => dirs.has(d))) arch.push("Feature-Sliced Design");
-  if (has("components") && has("hooks","stores")) arch.push("Component UI");
+  if (has("components") && has("hooks","stores") && !svelteKit) arch.push("Component UI");
   if (has("routers") && has("schemas") && profile.frameworks.includes("FastAPI")) arch.push("FastAPI routers");
   if (profile.frameworks.includes("Django") && /(?:^|\/)apps\.py$/m.test(inventory)) arch.push("Django apps");
   if (has("cmd") && has("internal","pkg")) arch.push("Go standard layout");
