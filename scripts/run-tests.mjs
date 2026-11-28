@@ -14,4 +14,7 @@ const files = readdirSync(path.join(root, "tests"), { withFileTypes: true })
 if (files.length === 0) throw new Error("No tests/*.test.ts files found");
 const results = run({ files, cwd: root });
 results.on("test:summary", ({ success }) => { if (!success) process.exitCode = 1; });
-await pipeline(results, spec, process.stdout);
+pipeline(results, new spec(), process.stdout).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
