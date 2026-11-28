@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test tests/gentle-graph.test.ts tests/languages.test.ts tests/arch-detector.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "engines": {
     "node": ">=24"
