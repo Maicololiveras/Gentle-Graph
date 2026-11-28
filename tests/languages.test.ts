@@ -332,3 +332,21 @@ it("classifies paths without loading adapters and indexes languages on demand", 
   `;
   execFileSync(process.execPath, ["--input-type=module", "-e", script, projectRoot], {windowsHide:true});
 });
+
+it("indexes BOM and CRLF sources at their original lines in Unicode paths", t => {
+  const file = "Vistas de José/Órdenes.xaml";
+  const view = '<Window x:Class="App.Orders">\r\n<Button Command="{Binding SaveCommand}"/>\r\n</Window>';
+  const cs = "using App.Services;\r\nnamespace App.Views;\r\npublic class Orders {}";
+  const {projectRoot} = project(t, {[file]:"\uFEFF"+view, "Orders.cs":"\uFEFF"+cs, "empty.ts":""});
+  for (const [name, source] of [[file,view],["Orders.cs",cs],["empty.ts",""]]) {
+    const parsed = parseSourceFile(projectRoot,name,fs.readFileSync(path.join(projectRoot,name),"utf8"));
+    assert.deepEqual(parsed,parseSourceFile(projectRoot,name,source));
+  }
+  const result = graphImpact("SaveCommand",{projectRoot});
+  const index = loadGraphIndex(projectRoot);
+  assert.ok(result && index.files[file] && index.files["empty.ts"]);
+  assert.ok(index.files["Orders.cs"].imports.includes("App.Services"));
+  const symbol = index.files[file].symbols.find(symbol => symbol.name === "Orders");
+  assert.equal(symbol?.line, 1);
+  assert.ok(symbol.sites?.some(site => site.target === "SaveCommand" && site.line === 2));
+});

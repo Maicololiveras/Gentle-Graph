@@ -27,7 +27,9 @@ const IGNORED_DIRS = new Set([
   "__pycache__"
 ]);
 
-function walkSourceFiles(root: string, current: string, acc: string[]): void {
+// The non-Git fallback never follows links and visits at most 64 directory levels.
+const MAX_WALK_DEPTH = 64;
+function walkSourceFiles(root: string, current: string, acc: string[], depth = 0): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(current, { withFileTypes: true });
@@ -36,9 +38,10 @@ function walkSourceFiles(root: string, current: string, acc: string[]): void {
   }
 
   for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      if (!IGNORED_DIRS.has(entry.name)) {
-        walkSourceFiles(root, path.join(current, entry.name), acc);
+      if (depth < MAX_WALK_DEPTH && !IGNORED_DIRS.has(entry.name)) {
+        walkSourceFiles(root, path.join(current, entry.name), acc, depth + 1);
       }
       continue;
     }

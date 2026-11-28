@@ -87,7 +87,7 @@ async function dispatch(lane: Lane, query: Query, requestedAt: number): Promise<
     const bootTimer = cold ? setTimeout(() => {
       retire();
       reject(new Error("Graph worker did not become ready within 10 seconds"));
-    }, WORKER_BOOT_TIMEOUT_MS) : undefined;
+    }, WORKER_BOOT_TIMEOUT_MS).unref() : undefined;
 
     function retire() {
       finish();
@@ -134,7 +134,7 @@ async function dispatch(lane: Lane, query: Query, requestedAt: number): Promise<
           workTimer = setTimeout(() => {
             retire();
             complete(partialReply());
-          }, IMPACT_BUDGET_MS);
+          }, IMPACT_BUDGET_MS).unref();
         }
         return;
       }

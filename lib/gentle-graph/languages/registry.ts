@@ -61,6 +61,7 @@ export function isTestFile(file: string) {
 export function parseSourceFile(root: string, file: string, content: string, preview = false) {
   const adapter = adapterFor(file);
   if (!adapter) throw new Error("Unsupported language: " + file);
+  if (content.charCodeAt(0) === 0xfeff) content = content.slice(1);
   return preview && adapter.id === "typescript" ? lexicalTS(file, content) : adapter.parse(root, file, content);
 }
 export function resolveImport(file: string, spec: string, paths: Set<string>) {

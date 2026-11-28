@@ -653,3 +653,17 @@ it("delegates unknown entries and directories replacing tracked files to Git",as
   fs.mkdirSync(path.join(root,"src","entry.ts"));
   assert.equal(await onlyTrackedEntries(root,files),false);
 });
+
+it("bounds the non-Git walk and skips a directory link back to its root", async t => {
+  const root = makeTempProject();
+  t.after(() => fs.rmSync(root,{recursive:true, force:true}));
+  const {listWorkspaceFiles} = await import("../lib/gentle-graph/indexer.ts");
+  fs.symlinkSync(root, path.join(root,"src","loop"), process.platform === "win32" ? "junction" : "dir");
+  const dirs = Array(64).fill("d").join("/");
+  fs.mkdirSync(path.join(root,dirs,"x"),{recursive:true});
+  fs.writeFileSync(path.join(root,dirs,"included.ts"),"");
+  fs.writeFileSync(path.join(root,dirs,"x","excluded.ts"),"");
+  const {knownFiles} = listWorkspaceFiles(root,null);
+  assert.ok(knownFiles.includes(dirs + "/included.ts"));
+  assert.ok(!knownFiles.some(file => file.includes("loop/") || file.endsWith("excluded.ts")));
+});
