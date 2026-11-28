@@ -112,9 +112,10 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   }
   return reply;
 }
-parentPort.on("message",async({query,prepared,inventoryReady,degraded,close}:{close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
+parentPort.on("message",async({queryId,query,prepared,inventoryReady,degraded,close}:{queryId:number;close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   if(close){startPublication?.();await publishing;parentPort.postMessage({drained:true});return;}
   try {
+    if (query.kind === "impact") parentPort.postMessage({started:queryId});
     const received = profile ? performance.now() : 0;
     let result:Awaited<ReturnType<typeof handle>>;
     try{result=await handle(query,prepared,degraded);}
@@ -131,3 +132,4 @@ parentPort.on("message",async({query,prepared,inventoryReady,degraded,close}:{cl
   catch(e){if(query.kind==="impact" && e instanceof GitScopeError && e.timedOut) parentPort.postMessage({timedOut:true});
     else parentPort.postMessage({error:String(e)});}
 });
+parentPort.postMessage({ready:true});

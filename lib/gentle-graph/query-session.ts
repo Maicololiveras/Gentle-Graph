@@ -29,6 +29,9 @@ interface Lane {
   pending: Map<string, Promise<QueryReply>>;
 }
 
+const WORKER_BOOT_TIMEOUT_MS = 10_000;
+const IMPACT_BUDGET_MS = 1500;
+let nextQueryId = 0;
 const lanes = new Map<string, Lane>();
 
 async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
@@ -69,16 +72,27 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
   }
   const worker = lane.worker ??= startWorker();
   return new Promise((resolve, reject) => {
-    let checkpoint = "Partial impact (time budget reached)\n" + query.term;
-    const timer = query.kind === "impact" ? setTimeout(() => {
+    const queryId = ++nextQueryId;
+    let checkpoint = "Partial impact (time budget reached before first checkpoint)";
+    let workTimer: ReturnType<typeof setTimeout>;
+    const bootTimer = cold ? setTimeout(() => {
+      retire();
+      reject(new Error("Graph worker did not become ready within 10 seconds"));
+    }, WORKER_BOOT_TIMEOUT_MS) : undefined;
+
+    function retire() {
       finish();
       lane.worker = undefined;
       lane.stopping = worker.terminate();
-      resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
-    }, 1500) : undefined;
+    }
+
+    function partialReply(): QueryReply {
+      return {text:checkpoint,mode:"unknown",indexed:null,partial:true};
+    }
 
     function finish() {
-      clearTimeout(timer);
+      clearTimeout(bootTimer);
+      clearTimeout(workTimer);
       worker.off("message", message);
       worker.off("exit", exit);
       worker.off("error", error);
@@ -93,11 +107,24 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
 
     function exit(code: number) { error(new Error("Graph worker exited (" + code + ")")); }
 
-    function message(reply: {result?: QueryReply; error?: string; checkpoint?: string; timedOut?: boolean}) {
+    function message(reply: {ready?: boolean; started?: number; result?: QueryReply; error?: string; checkpoint?: string; timedOut?: boolean}) {
+      if (reply.ready) {
+        clearTimeout(bootTimer);
+        return;
+      }
+      if (reply.started !== undefined) {
+        if (reply.started === queryId && query.kind === "impact" && !workTimer) {
+          workTimer = setTimeout(() => {
+            retire();
+            resolve(partialReply());
+          }, IMPACT_BUDGET_MS);
+        }
+        return;
+      }
       if (reply.checkpoint) { checkpoint = reply.checkpoint; return; }
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"reply",kind:query.kind,cold,ms:performance.now()-started}));
       finish();
-      if (reply.timedOut) resolve({text:checkpoint,mode:"unknown",indexed:null,partial:true});
+      if (reply.timedOut) resolve(partialReply());
       else if (reply.error) reject(new Error(reply.error));
       else resolve(reply.result);
     }
@@ -110,14 +137,12 @@ async function dispatch(lane: Lane, query: Query): Promise<QueryReply> {
       // Run the first Git commands while Node loads the language adapters in the worker.
       const prepared = cold ? await prepareColdScope(query.root, query.kind !== "guide" ? query.term : undefined, query.kind === "impact") : undefined;
       if(started!==undefined)console.error(JSON.stringify({graphProfile:"scope",kind:query.kind,cold,ms:performance.now()-started}));
-      if (lane.worker === worker) worker.postMessage({query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
+      if (lane.worker === worker) worker.postMessage({queryId,query, prepared, inventoryReady:started === undefined ? undefined : performance.now()});
     }
     send().catch(err => {
-      // Git preparation may fail while the new worker is still booting. Keep
-      // the healthy worker in its lane for a retry or normal session shutdown.
       if (lane.worker === worker) {
-        if(err instanceof GitScopeError){worker.postMessage({query,degraded:true});return;}
-        finish();
+        if(err instanceof GitScopeError){worker.postMessage({queryId,query,degraded:true});return;}
+        retire();
         reject(err);
       }
     });
