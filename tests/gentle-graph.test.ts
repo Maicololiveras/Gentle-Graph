@@ -563,6 +563,41 @@ it("keeps the guide direct and hides secondary declarations only alongside codem
   }
 });
 
+it("gives impact its full work budget after startup and labels a missing checkpoint", async t => {
+  const {Worker} = await import("node:worker_threads");
+  const {sessionQueryDetails, closeQuerySessions} = await import("../lib/gentle-graph/query-session.ts");
+  const root = makeTempProject();
+  const dispatched = Promise.withResolvers<{worker: WorkerType; queryId: number}>();
+  type WorkerType = InstanceType<typeof Worker>;
+  const postMessage = Worker.prototype.postMessage;
+  t.mock.method(Worker.prototype, "postMessage", function(this: WorkerType, message) {
+    if (message.query) dispatched.resolve({worker:this, queryId:message.queryId});
+    else postMessage.call(this, message);
+  });
+  t.mock.timers.enable({apis:["setTimeout"]});
+  try {
+    const result = sessionQueryDetails({root, kind:"impact", term:"verifyToken"});
+    const {worker, queryId} = await dispatched.promise;
+    t.mock.timers.tick(1800);
+    worker.emit("message", {ready:true});
+    worker.emit("message", {started:queryId - 1});
+    t.mock.timers.tick(1800);
+    worker.emit("message", {started:queryId});
+    t.mock.timers.tick(1499);
+    const pending = Symbol("pending");
+    assert.equal(await Promise.race([result, Promise.resolve(pending)]), pending);
+    t.mock.timers.tick(1);
+    assert.deepEqual(await result, {
+      text:"Partial impact (time budget reached before first checkpoint)",
+      mode:"unknown", indexed:null, partial:true
+    });
+  } finally {
+    t.mock.timers.reset();
+    await closeQuerySessions();
+    fs.rmSync(root, {recursive:true, force:true});
+  }
+});
+
 it("reports cold query telemetry and finds an untracked consumer in a fresh worktree",async t=>{
   const root=largeRepo(t);
   fs.writeFileSync(path.join(root,"tsconfig.json"),"{}");
