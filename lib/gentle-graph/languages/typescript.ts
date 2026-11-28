@@ -1,3 +1,4 @@
+import { parseWithCompilerWorker } from "../compiler-client.ts";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { findBraceBlockEnd, sourceFile } from "./lexer-core.ts";
@@ -90,6 +91,8 @@ export const typescript: LanguageAdapter = {
     return resolveModulePath(base, files);
   },
   parse(root, file, content) {
+    const remote = parseWithCompilerWorker(file, content);
+    if (remote) return remote;
     const ts = workspaceCompiler(root);
     if (!ts) return lexicalTS(file, content);
     const sf = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, false);

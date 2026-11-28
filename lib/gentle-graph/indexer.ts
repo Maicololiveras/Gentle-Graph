@@ -5,7 +5,7 @@ import {workerData} from "node:worker_threads";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { adapterFor, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
+import { languageForExtension, isIndexableFile, parseSourceFile, resolveImport } from "./languages/registry.ts";
 import { patchLookup, loadArchGuide, loadGraphIndex, updateArchGuide, saveGraphIndex } from "./store.ts";
 import type { ArchGuideStore, FileNode, GraphIndex, SyncStats } from "./types.ts";
 
@@ -111,7 +111,7 @@ export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
   const folders = new Set<string>([""]);
   // Git emits adjacent files from the same directory. Reuse its exclusion decision.
   let folder = "", skipFolder = false, contractFolder = false;
-  let lastExtension = "", adapter: ReturnType<typeof adapterFor>, isCSharp = false;
+  let lastExtension = "", adapter: ReturnType<typeof languageForExtension>, isCSharp = false;
   for (const file of knownFiles) {
     const slash = file.lastIndexOf("/");
     if (slash + 1 !== folder.length || !file.startsWith(folder)) {
@@ -127,14 +127,14 @@ export function listWorkspaceFiles(root: string, tracked = gitInventory(root)) {
     // depend on the whole filename and must still go through the registry.
     if (extension !== lastExtension) {
       lastExtension = extension;
-      adapter = extension ? adapterFor("source" + extension) : undefined;
+      adapter = extension ? languageForExtension(extension) : undefined;
       isCSharp = extension.toLowerCase() === ".cs";
     }
     if (adapter) {
       if (file.indexOf(".", slash + 1) !== dot && /\.(?:min|bundle)\.[cm]?[jt]sx?$/i.test(file)) continue;
       if (isCSharp && !isIndexableFile(file)) continue;
       files.push(file);
-      if (adapter.isTestFile(file)) tests.push(file);
+      if (adapter.test?.test(file)) tests.push(file);
       if (file.endsWith("build.gradle.kts") || file.endsWith("Package.swift")) manifests.push(file);
     } else if (isManifest(file)) manifests.push(file);
     if (contractFolder && isContract(file)) contracts.push(file);

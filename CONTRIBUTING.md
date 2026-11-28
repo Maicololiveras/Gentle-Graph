@@ -22,9 +22,11 @@ Normalize internal paths to `/` and operate on them with `path.posix`. Use nativ
 ## Before opening a pull request
 
 - Run `pnpm typecheck` and `pnpm test`. Include their outcome and the passing test count.
-- Run `node scripts/bench-jit.mjs 30000 --check`. Report the cold-guide median and p95. The p95 must be below 150 ms.
+- Run `node scripts/bench-jit.mjs 30000 --check`. Report the cold-guide median and p95. GitHub Actions enforces p95 below 150 ms on Linux and Windows. On modest or busy hardware, compare the base and PR on the same machine under similar load, and report both measurements. CI remains the absolute gate.
 - Record the OS used locally and the Linux and Windows CI results when available.
 - Obtain approval before changing `package.json`. Keep zero declared npm dependencies and avoid adding external binaries.
 - For engine, tool or prompt changes, attach the A/B report for the same commit, model and reasoning level. Both patches must pass verification. Each pair must show strictly fewer total tokens and less agent time with Gentle Graph. Mark outstanding measurements as pending.
 
 [Benchmark commands and acceptance criteria](docs/benchmarks.md) · [Project overview](README.md)
+
+Query telemetry in `details.gentleGraph` reports end-to-end `engineMs`, worker creation to readiness (`bootMs`, zero on reuse), and acknowledged execution to reply (`workMs`). Queueing and Git preparation can overlap startup or add latency outside these intervals. The timings travel separately from model-visible text.

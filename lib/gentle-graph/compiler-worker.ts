@@ -1,16 +1,16 @@
-// The compiler can initialize while the query worker loads its graph modules.
+// The compiler is loaded when the query worker sends its first full TS parse.
 // This worker only handles source text already admitted by the normal indexer.
 import {workerData,type MessagePort} from "node:worker_threads";
-import {typescript,workspaceCompiler} from "./languages/typescript.ts";
+import {createRequire} from "node:module";
+const require = createRequire(import.meta.url);
+let adapter: typeof import("./languages/typescript.ts").typescript;
 
 const {port,root,signal,profile} = workerData as {port:MessagePort;root:string;signal:Int32Array;profile:boolean};
-const start = profile ? performance.now() : 0;
-workspaceCompiler(root);
-if (profile) console.error(JSON.stringify({graphProfile:"compiler",start,end:performance.now()}));
 port.on("message", ({file,content}) => {
   try {
     const begin = profile ? performance.now() : 0;
-    const parsed = typescript.parse(root,file,content);
+    adapter ??= require("./languages/typescript.ts").typescript;
+    const parsed = adapter.parse(root,file,content);
     if (profile) console.error(JSON.stringify({graphProfile:"compilerParse",file,start:begin,end:performance.now()}));
     port.postMessage({parsed});
   }

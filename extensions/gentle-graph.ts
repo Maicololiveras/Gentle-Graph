@@ -21,12 +21,10 @@ function resolveRoot(explicitRoot?: string, ctxCwd?: string): string {
 
 async function timedQuery(id: string, tool: string, query: () => Promise<QueryReply>) {
   const trace = process.env.GENTLE_BENCH_ENGINE_TRACE;
-  const started = performance.now();
-  const {text,mode,indexed,partial}=await query();
-  const engineMs=performance.now()-started;
-  if(trace)try{appendFileSync(trace,JSON.stringify({id,tool,engineMs})+"\n");}
+  const {text, ...telemetry} = await query();
+  if(trace)try{appendFileSync(trace,JSON.stringify({id,tool,...telemetry})+"\n");}
   catch{/* Optional trace file. */}
-  return {content:[{type:"text" as const,text}],details:{gentleGraph:{engineMs,mode,indexed,partial}}};
+  return {content:[{type:"text" as const,text}],details:{gentleGraph:telemetry}};
 }
 
 const GuideParams = Type.Object({
@@ -121,10 +119,12 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				files?: string[];
 				projectRoot?: string;
 			};
-			return timedQuery(_toolCallId,"graph_register_pattern",async()=>({
-        text:formatPattern(graphRegisterPattern(domain,entry,guidance,files??[],resolveRoot(projectRoot,ctx?.cwd))),
-        mode:"register",indexed:0,partial:false
-      }));
+			return timedQuery(_toolCallId,"graph_register_pattern",async () => {
+        const start = performance.now();
+        const text = formatPattern(graphRegisterPattern(domain,entry,guidance,files??[],resolveRoot(projectRoot,ctx?.cwd)));
+        const workMs = performance.now() - start;
+        return {text, mode:"register", indexed:0, partial:false, engineMs:workMs, bootMs:0, workMs};
+      });
 		},
 	});
 

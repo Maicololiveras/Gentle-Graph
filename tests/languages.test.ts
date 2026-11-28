@@ -311,3 +311,24 @@ it("follows C and C++ local headers and locates an out-of-class method", async t
   assert(graphInspect("check",opts)[0].callees.some(s=>s.name==="work"));
   assert(isTestFile("src/check_test.c"));
 });
+
+it("classifies paths without loading adapters and indexes languages on demand", t => {
+  const {projectRoot} = project(t, {"service.ts":"export function service() { return 42; }"});
+  const registry = new URL("../lib/gentle-graph/languages/registry.ts", import.meta.url);
+  const indexer = new URL("../lib/gentle-graph/indexer.ts", import.meta.url);
+  const script = `
+    import assert from "node:assert/strict";
+    import {sourceExtensions, isIndexableFile, isTestFile, loadedLanguageAdapters, parseSourceFile} from ${JSON.stringify(registry.href)};
+    import {syncGraphIndex} from ${JSON.stringify(indexer.href)};
+    for (const ext of sourceExtensions) assert.ok(isIndexableFile("demo" + ext));
+    assert.ok(isTestFile("OrderTests.cs"));
+    assert.deepEqual(loadedLanguageAdapters(), []);
+    const root = process.argv[1];
+    const {index} = syncGraphIndex(root);
+    assert.ok(index.files["service.ts"]);
+    assert.deepEqual(loadedLanguageAdapters(), ["typescript"]);
+    parseSourceFile(root, "Order.cs", "public class Order {}");
+    assert.deepEqual(loadedLanguageAdapters(), ["typescript", "csharp"]);
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "-e", script, projectRoot], {windowsHide:true});
+});

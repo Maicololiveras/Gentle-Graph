@@ -587,7 +587,9 @@ it("gives impact its full work budget after startup and labels a missing checkpo
     const pending = Symbol("pending");
     assert.equal(await Promise.race([result, Promise.resolve(pending)]), pending);
     t.mock.timers.tick(1);
-    assert.deepEqual(await result, {
+    const {engineMs, bootMs, workMs, ...reply} = await result;
+    assert.ok(engineMs >= workMs && bootMs >= 0 && workMs >= 0);
+    assert.deepEqual(reply, {
       text:"Partial impact (time budget reached before first checkpoint)",
       mode:"unknown", indexed:null, partial:true
     });
@@ -610,7 +612,11 @@ it("reports cold query telemetry and finds an untracked consumer in a fresh work
     assert.equal(first.partial,false);
     assert.ok(first.indexed>0 && first.indexed<40);
     assert.match(first.text,/extra\.test\.ts/);
-    assert.deepEqual(await sessionQueryDetails(query),first);
+    const warm = await sessionQueryDetails(query);
+    assert.ok(first.bootMs > 0 && first.workMs >= 0 && first.engineMs >= first.bootMs + first.workMs);
+    assert.equal(warm.bootMs, 0);
+    assert.ok(warm.workMs >= 0 && warm.engineMs >= warm.workMs);
+    assert.deepEqual({...warm, engineMs:first.engineMs, workMs:first.workMs, bootMs:first.bootMs}, first);
   }finally{await closeQuerySessions();}
   const persisted=JSON.parse(fs.readFileSync(path.join(root,".gentle-graph/index.json"),"utf8"));
   assert.ok(persisted.files["extra.test.ts"]);

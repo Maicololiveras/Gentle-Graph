@@ -1,7 +1,7 @@
 import {existsSync} from "node:fs";
 import path from "node:path";
-import {typescript,workspaceCompiler} from "./languages/typescript.ts";
-import {parentPort,receiveMessageOnPort,workerData,type MessagePort} from "node:worker_threads";
+import {attachCompiler, type CompilerConnection} from "./compiler-client.ts";
+import {parentPort,workerData} from "node:worker_threads";
 import {gitSnapshot,gitSessionInventory,adoptGitSnapshot,coldTrackedPaths,GitScopeError,type GitSnapshot} from "./git-scope.ts";
 import {indexStamp,beginGraphWrites,flushGraphWrites} from "./store.ts";
 import {syncGraphIndex,cachedScope,SYNC_TTL_MS} from "./indexer.ts";
@@ -13,31 +13,11 @@ import {formatGuide,formatInspect,formatImpact} from "./format.ts";
 import type {Query} from "./query-session.ts";
 
 // Git discovers the first worktree scope concurrently on the parent thread.
-const initial = workerData as Query & {profileStart?:number;compiler?:{port:MessagePort;signal:Int32Array}};
+const initial = workerData as Query & {profileStart?:number;compiler?:CompilerConnection};
 const profile = initial.kind === "inspect" && initial.profileStart !== undefined;
 const workerReady = profile ? performance.now() : 0;
-let compilerEnd = workerReady;
-if (initial.compiler) {
-  const {port,signal}=initial.compiler;
-  const localParse=typescript.parse;
-  typescript.parse=(root,file,content)=>{
-    const version=Atomics.load(signal,0);
-    if (!Atomics.load(signal,1)) {
-      port.postMessage({file,content});
-      // Only the isolated graph worker waits. On a crash or timeout, resume
-      // with the same local adapter and retire the port to avoid stale replies.
-      const waited=Atomics.wait(signal,0,version,4000);
-      const reply=waited==="timed-out" ? undefined : receiveMessageOnPort(port)?.message;
-      if (reply?.parsed) return reply.parsed;
-    }
-    typescript.parse=localParse;
-    port.close();
-    return localParse(root,file,content);
-  };
-} else if (initial.kind !== "guide" && existsSync(path.join(initial.root, "tsconfig.json"))) {
-  workspaceCompiler(initial.root);
-  if (profile) compilerEnd = performance.now();
-}
+
+if (initial.compiler) attachCompiler(initial.compiler);
 
 const profileCache={};
 let previews:ReturnType<typeof previewTrackedGuide>;
@@ -115,7 +95,7 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
 parentPort.on("message",async({queryId,query,prepared,inventoryReady,degraded,close}:{queryId:number;close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   if(close){startPublication?.();await publishing;parentPort.postMessage({drained:true});return;}
   try {
-    if (query.kind === "impact") parentPort.postMessage({started:queryId});
+    parentPort.postMessage({started:queryId});
     const received = profile ? performance.now() : 0;
     let result:Awaited<ReturnType<typeof handle>>;
     try{result=await handle(query,prepared,degraded);}
@@ -125,7 +105,7 @@ parentPort.on("message",async({queryId,query,prepared,inventoryReady,degraded,cl
     }
     if(profile && prepared && inventoryReady !== undefined) {
       const start = initial.profileStart!;
-      console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,compilerEnd,received,end:performance.now()}));
+      console.error(JSON.stringify({graphProfile:"inspectCold",start,inventoryReady,workerReady,received,end:performance.now()}));
     }
     parentPort.postMessage({result});
   }
