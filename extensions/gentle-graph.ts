@@ -1,5 +1,5 @@
 import {sessionQueryDetails,closeQuerySessions,type QueryReply} from "../lib/gentle-graph/query-session.ts";
-import { appendFileSync } from "node:fs";
+import {queryEvent,telemetryWriter,type GraphTool} from "../lib/gentle-graph/telemetry.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { appendSystemPromptOnce } from "../lib/append-system-prompt.ts";
@@ -17,14 +17,6 @@ const CODEMODE_HINT = "Read graph_guide ranges with offset/limit. In codemode ca
 
 function resolveRoot(explicitRoot?: string, ctxCwd?: string): string {
 	return explicitRoot || ctxCwd || process.env.GENTLE_WORKTREE_ROOT || process.cwd();
-}
-
-async function timedQuery(id: string, tool: string, query: () => Promise<QueryReply>) {
-  const trace = process.env.GENTLE_BENCH_ENGINE_TRACE;
-  const {text, ...telemetry} = await query();
-  if(trace)try{appendFileSync(trace,JSON.stringify({id,tool,...telemetry})+"\n");}
-  catch{/* Optional trace file. */}
-  return {content:[{type:"text" as const,text}],details:{gentleGraph:telemetry}};
 }
 
 const GuideParams = Type.Object({
@@ -61,6 +53,30 @@ export function graphLoadout(name:string){
 }
 
 export default function gentleGraphExtension(pi: ExtensionAPI) {
+  const writer = telemetryWriter();
+  const routes = new Map<string, {name:string; via:boolean | null}>();
+  pi.on("tool_execution_start", event => {
+    const parent = event.parentToolCallId ? routes.get(event.parentToolCallId) : undefined;
+    const via = event.parentToolCallId ? (parent ? parent.name === "codemode" || parent.via : null) : false;
+    routes.set(event.toolCallId,{name:event.toolName,via});
+  });
+  pi.on("tool_execution_end", event => { routes.delete(event.toolCallId); });
+
+  async function timedQuery(id:string, tool:GraphTool, root:string, sessionId:string | undefined, query:() => Promise<QueryReply>) {
+    const start = performance.now();
+    const via = routes.get(id)?.via ?? null;
+    try {
+      const reply = await query();
+      const event = queryEvent(tool,id,root,sessionId,via,performance.now()-start,reply);
+      writer.record(event);
+      return {content:[{type:"text" as const,text:reply.text}],details:{gentleGraph:event}};
+    } catch (error) {
+      writer.record(queryEvent(tool,id,root,sessionId,via,performance.now()-start,undefined,
+        error instanceof Error ? error.name : "Error"));
+      throw error;
+    }
+  }
+
 	pi.registerTool({
 		name: "graph_guide",
 		label: "Gentle Graph guide",
@@ -73,7 +89,8 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				limit?: number;
 				includeSnippets?: boolean;
 			};
-			return timedQuery(_toolCallId, "graph_guide", () => sessionQueryDetails({kind:"guide",term:intent,root:resolveRoot(projectRoot,ctx?.cwd), limit, includeSnippets}));
+			const root = resolveRoot(projectRoot,ctx?.cwd);
+			return timedQuery(_toolCallId, "graph_guide", root, ctx?.sessionManager?.getSessionId?.(), () => sessionQueryDetails({kind:"guide",term:intent,root, limit, includeSnippets}));
 		},
 	});
 
@@ -89,7 +106,8 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				depth?: number;
 				projectRoot?: string;
 			};
-			return timedQuery(_toolCallId, "graph_inspect", () => sessionQueryDetails({kind:"inspect",term:symbol,root:resolveRoot(projectRoot,ctx?.cwd), depth}));
+			const root = resolveRoot(projectRoot,ctx?.cwd);
+			return timedQuery(_toolCallId, "graph_inspect", root, ctx?.sessionManager?.getSessionId?.(), () => sessionQueryDetails({kind:"inspect",term:symbol,root, depth}));
 		},
 	});
 
@@ -101,7 +119,8 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 		parameters: ImpactParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const { target, projectRoot } = params as { target: string; projectRoot?: string };
-			return timedQuery(_toolCallId, "graph_impact", () => sessionQueryDetails({kind:"impact",term:target,root:resolveRoot(projectRoot,ctx?.cwd)}));
+			const root = resolveRoot(projectRoot,ctx?.cwd);
+			return timedQuery(_toolCallId, "graph_impact", root, ctx?.sessionManager?.getSessionId?.(), () => sessionQueryDetails({kind:"impact",term:target,root}));
 		},
 	});
 
@@ -119,11 +138,12 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 				files?: string[];
 				projectRoot?: string;
 			};
-			return timedQuery(_toolCallId,"graph_register_pattern",async () => {
+			const root = resolveRoot(projectRoot,ctx?.cwd);
+			return timedQuery(_toolCallId, "graph_register_pattern", root, ctx?.sessionManager?.getSessionId?.(),async () => {
         const start = performance.now();
-        const text = formatPattern(graphRegisterPattern(domain,entry,guidance,files??[],resolveRoot(projectRoot,ctx?.cwd)));
+        const text = formatPattern(graphRegisterPattern(domain,entry,guidance,files??[],root));
         const workMs = performance.now() - start;
-        return {text, mode:"register", indexed:0, partial:false, engineMs:workMs, bootMs:0, workMs};
+        return {text, mode:"register", cacheHit:null, indexed:0, partial:false, engineMs:workMs, bootMs:0, workMs};
       });
 		},
 	});
@@ -136,6 +156,8 @@ export default function gentleGraphExtension(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		await closeQuerySessions();
+        await writer.close();
+        routes.clear();
 		clearGitSession();
 		clearMemoryCache();
 	});

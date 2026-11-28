@@ -35,12 +35,12 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
   const key=JSON.stringify(q);
   const cacheKey=key+indexStamp(q.root);
   const cached=state?.results.get(cacheKey);
-  if(cached!==undefined)return cached;
+  if(cached!==undefined)return {...cached,cacheHit:true};
   if(publishing){
     startPublication?.();
     await publishing;
     const committed=state?.results.get(key+indexStamp(q.root));
-    if(committed!==undefined)return committed;
+    if(committed!==undefined)return {...committed,cacheHit:true};
   }
   const inventory=degraded?null:prepared ? prepared[1] : await gitSessionInventory(q.root,state);
   let publication:ReturnType<typeof flushGraphWrites>;
@@ -90,7 +90,7 @@ async function handle(q:Query,prepared?:Prepared,degraded=false){
       if(initial.profileStart!==undefined)console.error("Graph cache publication failed",error.code);
     }).finally(()=>{publishing=undefined;startPublication=undefined;});
   }
-  return reply;
+  return {...reply,cacheHit:false};
 }
 parentPort.on("message",async({queryId,query,prepared,inventoryReady,degraded,close}:{queryId:number;close?:boolean;query:Query;prepared?:Prepared;inventoryReady?:number;degraded?:boolean})=>{
   if(close){startPublication?.();await publishing;parentPort.postMessage({drained:true});return;}

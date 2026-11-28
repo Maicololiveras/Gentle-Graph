@@ -14,6 +14,7 @@ export interface Query {
 }
 
 interface WorkerReply {
+  cacheHit:boolean | null;
   text:string;
   mode:string;
   indexed:number|null;
@@ -96,7 +97,7 @@ async function dispatch(lane: Lane, query: Query, requestedAt: number): Promise<
     }
 
     function partialReply(): WorkerReply {
-      return {text:checkpoint,mode:"unknown",indexed:null,partial:true};
+      return {cacheHit:null,text:checkpoint,mode:"unknown",indexed:null,partial:true};
     }
 
     function complete(reply: WorkerReply) {
